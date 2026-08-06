@@ -1,13 +1,23 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import {
   createSalesCsv,
   extractCsv,
   recordsFromSalesRows,
+  requiredColumns,
   runEtl,
+  validateManualCorrection,
 } from "./etl";
-import type { EtlResult, RawSalesRecord, SalesRow } from "./etl";
+import type {
+  EtlResult,
+  ManualFieldChange,
+  QuarantinedProblem,
+  RawSalesRecord,
+  RequiredColumn,
+  SalesRow,
+} from "./etl";
 import type { AnalystResponse, QueryColumn, QueryValue } from "./sql-analyst";
 
 const demoRows: SalesRow[] = [
@@ -42,6 +52,30 @@ const money = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+type ManualAuditEntry = {
+  id: string;
+  sourceRow: number;
+  orderId: string;
+  publishedAt: string;
+  changes: ManualFieldChange[];
+  trustedRowsAdded: number;
+};
+
+const fieldLabels: Record<RequiredColumn, string> = {
+  order_id: "Order ID",
+  date: "Date",
+  region: "Region",
+  category: "Category",
+  revenue: "Revenue",
+  cost: "Cost",
+  status: "Status",
+};
+
+function problemAppliesToField(problem: QuarantinedProblem, field: RequiredColumn) {
+  return problem.field === field
+    || (problem.field === "revenue / cost" && (field === "revenue" || field === "cost"));
+}
+
 function downloadCsv(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -66,6 +100,12 @@ export default function Home() {
     "West is the current revenue leader. Ask me about regions, margins, late orders, or data quality.",
   );
   const [queryTrace, setQueryTrace] = useState<AnalystResponse | null>(null);
+  const [selectedSourceRow, setSelectedSourceRow] = useState<number | null>(null);
+  const [remediationDraft, setRemediationDraft] = useState<Record<RequiredColumn, string> | null>(null);
+  const [remediationError, setRemediationError] = useState("");
+  const [remediationProblems, setRemediationProblems] = useState<QuarantinedProblem[]>([]);
+  const [remediationStatus, setRemediationStatus] = useState("");
+  const [remediationAudit, setRemediationAudit] = useState<ManualAuditEntry[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const issues = etlResult?.issues ?? [];
@@ -75,6 +115,12 @@ export default function Home() {
   const quarantinedCount = etlResult?.quarantinedRows ?? 0;
   const sourceQuality = etlResult?.sourceQualityScore ?? 0;
   const publishedQuality = etlResult?.publishedQualityScore ?? 0;
+  const selectedQuarantine = selectedSourceRow === null
+    ? null
+    : quarantinedRecords.find((record) => record.sourceRow === selectedSourceRow) ?? null;
+  const selectedRawRecord = selectedSourceRow === null
+    ? null
+    : rawRecords.find((record) => record.sourceRow === selectedSourceRow) ?? null;
 
   const analytics = useMemo(() => {
     const revenue = rows.reduce((total, row) => total + row.revenue, 0);
@@ -148,6 +194,12 @@ export default function Home() {
       setLastRun("Extracted • ready to validate and transform");
       setAnswer("Your raw file is loaded but has not been cleaned. Run the ETL pipeline before asking about performance.");
       setQueryTrace(null);
+      setSelectedSourceRow(null);
+      setRemediationDraft(null);
+      setRemediationError("");
+      setRemediationProblems([]);
+      setRemediationStatus("");
+      setRemediationAudit([]);
     };
     reader.readAsText(file);
   }
@@ -166,7 +218,78 @@ export default function Home() {
         `The pipeline published ${result.rows.length} trusted rows, corrected ${result.corrections.length} values, removed ${result.duplicatesResolved} exact duplicate${result.duplicatesResolved === 1 ? "" : "s"}, and quarantined ${result.quarantinedRows} risky row${result.quarantinedRows === 1 ? "" : "s"}.`,
       );
       setQueryTrace(null);
+      setSelectedSourceRow(null);
+      setRemediationDraft(null);
+      setRemediationError("");
+      setRemediationProblems([]);
     }, 650);
+  }
+
+  function openCorrection(sourceRow: number) {
+    const quarantine = quarantinedRecords.find((record) => record.sourceRow === sourceRow);
+    const sourceRecord = rawRecords.find((record) => record.sourceRow === sourceRow);
+    if (!quarantine || !sourceRecord) return;
+
+    setSelectedSourceRow(sourceRow);
+    setRemediationDraft({ ...sourceRecord.values });
+    setRemediationProblems(quarantine.problems);
+    setRemediationError("");
+    setRemediationStatus("");
+  }
+
+  function closeCorrection() {
+    setSelectedSourceRow(null);
+    setRemediationDraft(null);
+    setRemediationProblems([]);
+    setRemediationError("");
+  }
+
+  function updateCorrection(field: RequiredColumn, value: string) {
+    setRemediationDraft((current) => current ? { ...current, [field]: value } : current);
+  }
+
+  function submitCorrection(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (selectedSourceRow === null || !remediationDraft || !etlResult) return;
+
+    const correction = validateManualCorrection(
+      rawRecords,
+      etlResult,
+      selectedSourceRow,
+      remediationDraft,
+    );
+
+    if (!correction.ok) {
+      setRemediationError(correction.message);
+      setRemediationProblems(correction.problems);
+      return;
+    }
+
+    const publishedAt = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const publishedOrderId = remediationDraft.order_id.trim() || selectedQuarantine?.orderId || "Unknown order";
+    const trustedLabel = `${correction.trustedRowsAdded} trusted row${correction.trustedRowsAdded === 1 ? "" : "s"}`;
+
+    setRawRecords(correction.records);
+    setRows(correction.result.rows);
+    setEtlResult(correction.result);
+    setPipelineStatus("complete");
+    setLastRun(`Republished after manual review • ${publishedAt}`);
+    setAnswer(
+      `${publishedOrderId} passed the full data contract and added ${trustedLabel}. KPIs and analyst queries now use the republished trusted dataset.`,
+    );
+    setQueryTrace(null);
+    setRemediationAudit((current) => [{
+      id: `${selectedSourceRow}-${Date.now()}`,
+      sourceRow: selectedSourceRow,
+      orderId: publishedOrderId,
+      publishedAt,
+      changes: correction.changes,
+      trustedRowsAdded: correction.trustedRowsAdded,
+    }, ...current]);
+    setRemediationStatus(
+      `${publishedOrderId} was revalidated and published. ${trustedLabel} added; dashboard KPIs and SQL answers refreshed.`,
+    );
+    closeCorrection();
   }
 
   async function answerQuestion(value = question) {
@@ -344,6 +467,21 @@ export default function Home() {
                 <div><strong>{quarantinedCount} rows quarantined for review</strong><small>Missing values, invalid dates, negative values, and conflicting IDs</small></div>
               </article>
             </div>
+            <div className="resolution-workflow" aria-label="Customer correction workflow">
+              <div className="resolution-heading">
+                <div>
+                  <p className="section-kicker">Customer correction workflow</p>
+                  <strong>Turn reviewed exceptions into trusted records</strong>
+                </div>
+                <span>Human-verified remediation</span>
+              </div>
+              <ol>
+                <li><b>1</b><span><strong>Review</strong><small>Open the quarantined source row and its validation reasons.</small></span></li>
+                <li><b>2</b><span><strong>Verify</strong><small>Confirm the intended value with the source system or record owner.</small></span></li>
+                <li><b>3</b><span><strong>Revalidate</strong><small>Run the edited record through the complete data contract again.</small></span></li>
+                <li><b>4</b><span><strong>Republish</strong><small>Refresh trusted KPIs and SQL answers only after every rule passes.</small></span></li>
+              </ol>
+            </div>
             <div className="quarantine-panel">
               <div className="quarantine-heading">
                 <div>
@@ -358,7 +496,7 @@ export default function Home() {
                 <div className="quarantine-table-wrap">
                   <table className="quarantine-table" aria-label="Quarantined records and validation reasons">
                     <thead>
-                      <tr><th>Order ID</th><th>Source row</th><th>Invalid field and value</th><th>Reason</th></tr>
+                      <tr><th>Order ID</th><th>Source row</th><th>Invalid field and value</th><th>Reason</th><th>Action</th></tr>
                     </thead>
                     <tbody>
                       {quarantinedRecords.map((record) => (
@@ -377,6 +515,16 @@ export default function Home() {
                               {record.problems.map((problem, index) => <span key={`${problem.message}-${index}`}>{problem.message}</span>)}
                             </div>
                           </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="review-record-button"
+                              onClick={() => openCorrection(record.sourceRow)}
+                              aria-label={`Review and correct ${record.orderId} from source row ${record.sourceRow}`}
+                            >
+                              Review &amp; correct
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -384,6 +532,79 @@ export default function Home() {
                 </div>
               ) : (
                 <p className="quarantine-empty clear"><span>✓</span>No records were quarantined in this pipeline run.</p>
+              )}
+              {selectedQuarantine && selectedRawRecord && remediationDraft && (
+                <form className="remediation-editor" onSubmit={submitCorrection}>
+                  <div className="remediation-editor-heading">
+                    <div>
+                      <p className="section-kicker">Verified correction</p>
+                      <strong>{selectedQuarantine.orderId} · source row {selectedQuarantine.sourceRow}</strong>
+                      <span>Edit only values confirmed by the source system or record owner.</span>
+                    </div>
+                    <button type="button" className="editor-close" onClick={closeCorrection} aria-label="Close correction form">×</button>
+                  </div>
+                  <div className="remediation-safety-note">
+                    <b>No values are guessed.</b> Submitting this form reruns required-field checks, type conversion, business validation, duplicate checks, and publication eligibility.
+                  </div>
+                  <div className="remediation-fields">
+                    {requiredColumns.map((field) => {
+                      const fieldProblems = remediationProblems.filter((problem) => problemAppliesToField(problem, field));
+                      const original = selectedRawRecord.values[field];
+                      return (
+                        <label className={fieldProblems.length ? "has-problem" : ""} key={field}>
+                          <span>{fieldLabels[field]}</span>
+                          <input
+                            value={remediationDraft[field]}
+                            onChange={(event) => updateCorrection(field, event.target.value)}
+                            aria-invalid={fieldProblems.length ? "true" : "false"}
+                            autoComplete="off"
+                          />
+                          <small>Original: <code>{original || "(blank)"}</code></small>
+                          {fieldProblems.map((problem, index) => (
+                            <em key={`${problem.field}-${problem.message}-${index}`}>{problem.message}</em>
+                          ))}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {remediationError && <p className="remediation-error" role="alert">{remediationError}</p>}
+                  <div className="remediation-actions">
+                    <button type="button" className="secondary-button" onClick={closeCorrection}>Cancel</button>
+                    <button type="submit" className="publish-correction-button">Validate &amp; republish</button>
+                  </div>
+                </form>
+              )}
+            </div>
+            {remediationStatus && <p className="remediation-status" role="status"><span>✓</span>{remediationStatus}</p>}
+            <div className="remediation-audit">
+              <div className="remediation-audit-heading">
+                <div><strong>Manual correction audit</strong><span>Verified edits accepted during this session.</span></div>
+                <span>{remediationAudit.length} published</span>
+              </div>
+              {remediationAudit.length ? (
+                <div className="remediation-audit-table-wrap">
+                  <table>
+                    <thead><tr><th>Time</th><th>Record</th><th>Verified changes</th><th>Result</th></tr></thead>
+                    <tbody>
+                      {remediationAudit.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{entry.publishedAt}</td>
+                          <td><strong>{entry.orderId}</strong><small>Source row {entry.sourceRow}</small></td>
+                          <td>
+                            <div className="audit-change-list">
+                              {entry.changes.map((change) => (
+                                <span key={change.field}><b>{fieldLabels[change.field]}</b><code>{change.before || "(blank)"}</code><i>→</i><code>{change.after || "(blank)"}</code></span>
+                              ))}
+                            </div>
+                          </td>
+                          <td><span className="audit-result">+{entry.trustedRowsAdded} trusted</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p>No manual corrections have been published in this session.</p>
               )}
             </div>
             <div className="transformation-footer">

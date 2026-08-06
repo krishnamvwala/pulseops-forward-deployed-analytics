@@ -53,6 +53,12 @@ export type QuarantinedRecord = {
   problems: QuarantinedProblem[];
 };
 
+export type ManualFieldChange = {
+  field: RequiredColumn;
+  before: string;
+  after: string;
+};
+
 export type EtlResult = {
   rows: SalesRow[];
   issues: DataIssue[];
@@ -67,6 +73,20 @@ export type EtlResult = {
 export type ExtractResult =
   | { ok: true; records: RawSalesRecord[]; rowCount: number }
   | { ok: false; error: string };
+
+export type ManualCorrectionResult =
+  | {
+      ok: true;
+      records: RawSalesRecord[];
+      result: EtlResult;
+      changes: ManualFieldChange[];
+      trustedRowsAdded: number;
+    }
+  | {
+      ok: false;
+      message: string;
+      problems: QuarantinedProblem[];
+    };
 
 function parseCsvLine(line: string) {
   const values: string[] = [];
@@ -388,6 +408,75 @@ export function runEtl(records: RawSalesRecord[]): EtlResult {
     quarantinedRows: quarantined.size,
     sourceQualityScore: calculateSourceQuality(issues, corrections, duplicatesResolved),
     publishedQualityScore: rows.length ? 100 : 0,
+  };
+}
+
+export function validateManualCorrection(
+  records: RawSalesRecord[],
+  currentResult: EtlResult,
+  sourceRow: number,
+  values: Record<RequiredColumn, string>,
+): ManualCorrectionResult {
+  const sourceRecord = records.find((record) => record.sourceRow === sourceRow);
+  if (!sourceRecord) {
+    return {
+      ok: false,
+      message: `Source row ${sourceRow} is no longer available for review.`,
+      problems: [],
+    };
+  }
+
+  const changes = requiredColumns
+    .filter((field) => sourceRecord.values[field] !== values[field])
+    .map((field) => ({
+      field,
+      before: sourceRecord.values[field],
+      after: values[field],
+    }));
+
+  if (!changes.length) {
+    return {
+      ok: false,
+      message: "Enter at least one verified correction before revalidating this record.",
+      problems: currentResult.quarantinedRecords.find((record) => record.sourceRow === sourceRow)?.problems ?? [],
+    };
+  }
+
+  const updatedRecords = records.map((record) => (
+    record.sourceRow === sourceRow
+      ? { ...record, values: { ...values } }
+      : record
+  ));
+  const nextResult = runEtl(updatedRecords);
+  const remainingQuarantine = nextResult.quarantinedRecords.find((record) => record.sourceRow === sourceRow);
+
+  if (remainingQuarantine) {
+    return {
+      ok: false,
+      message: "This record still fails the data contract. Review the remaining issues and try again.",
+      problems: remainingQuarantine.problems,
+    };
+  }
+
+  const trustedRowsAdded = nextResult.rows.length - currentResult.rows.length;
+  if (trustedRowsAdded < 1) {
+    return {
+      ok: false,
+      message: "The corrected values match an existing order, so this row would be removed as a duplicate instead of published. Verify the order ID and values.",
+      problems: [{
+        field: "order_id",
+        value: values.order_id.trim() || "(blank)",
+        message: "Correction does not create a new trusted record",
+      }],
+    };
+  }
+
+  return {
+    ok: true,
+    records: updatedRecords,
+    result: nextResult,
+    changes,
+    trustedRowsAdded,
   };
 }
 

@@ -32,6 +32,7 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Data-quality controls | Schema, completeness, type, uniqueness, date, and business-rule checks |
 | Error isolation | Risky rows quarantined with source values and row-level reasons before analytical calculations |
 | Safe correction | Formatting, date, and numeric normalization with a correction log |
+| Human remediation | Source-verified edits, complete revalidation, immediate republishing, and a before/after session audit |
 | Operational transparency | Four-stage pipeline execution trace |
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
 | Performance investigation | Regional ranking and category economics |
@@ -48,6 +49,8 @@ flowchart TB
         C[Row validation]
         D[Safe transformations]
         I[Quarantine]
+        L[Verified correction form]
+        M[Manual correction audit]
         J[Cleaned CSV]
         E[KPI calculations]
         F[Regional and category analysis]
@@ -58,6 +61,8 @@ flowchart TB
     A --> B --> C
     C -->|Safe to correct| D
     C -->|Risky or ambiguous| I
+    I --> L --> C
+    L --> M
     C -->|Finding| H
     D --> K[In-memory trusted_sales table]
     K --> E
@@ -96,6 +101,12 @@ Accepted values are converted to a typed `SalesRow` structure. The pipeline trim
 ### 4. Publish
 
 The interface compares source quality with published quality, reports corrections and exceptions, displays every quarantined record with its source row, order ID, original value, and reason, enables a cleaned-CSV download, and recomputes KPI cards, region rankings, category margins, and copilot context from published rows only.
+
+### 5. Correct and Republish
+
+A quarantined row can be opened in a customer correction form that displays all seven source fields, highlights the fields that failed validation, and retains the original value beside each input. The customer must verify the intended values outside PulseOps before editing; the application never invents a replacement.
+
+Selecting **Validate & republish** reruns the entire dataset through the same ETL contract. A row remains quarantined when any rule still fails, and a change that collapses into an existing exact duplicate is not described as a new trusted record. An accepted correction updates the in-memory source records, trusted dataset, quality scores, KPI cards, cleaned CSV, and SQL-backed analyst context in one state transition. The session audit records the source row, order ID, time, changed fields, and before/after values.
 
 ## Business Metrics
 
@@ -143,6 +154,9 @@ Limits are parsed as bounded integers from 1–5, and unrecognized user text nev
 - Pipeline stages provide understandable data lineage.
 - Validation uses plain-language checks rather than only error codes.
 - The interface separates corrected values from quarantined records so users can see what changed and why.
+- A four-step review guide makes the customer remediation process discoverable: review, verify, revalidate, and republish.
+- Quarantined rows expose an editable review form, while failed resubmissions remain isolated with updated validation reasons.
+- Accepted corrections immediately refresh every downstream consumer and appear in a before/after session audit.
 - Impossible dates receive specific explanations, such as an invalid month or a day beyond the length of that month.
 - KPIs show both the headline result and supporting context.
 - Suggested questions help a new user discover the copilot, while the SQL trace makes each answer explainable.
@@ -186,15 +200,17 @@ Produced a Cloudflare-compatible build and a hosted demonstration with a custom 
 3. Upload the file and show that it is extracted but not yet transformed.
 4. Run the ETL pipeline and explain each stage.
 5. Review corrections, removed duplicates, quarantined rows, and before/after quality.
-6. Download the cleaned CSV.
-7. Compare regional revenue and category margins.
-8. Ask the copilot to show the top two regions by revenue.
-9. Open the SQL trace and explain that the query ran only against the published dataset.
-10. Close with production extensions and security requirements.
+6. Open a quarantined row, explain how the intended value would be verified with the source owner, and enter the confirmed correction.
+7. Select **Validate & republish** and show the trusted-row count, quality score, KPI, and audit updates.
+8. Download the cleaned CSV.
+9. Compare regional revenue and category margins.
+10. Ask the copilot to show the top two regions by revenue.
+11. Open the SQL trace and explain that the query ran only against the published dataset.
+12. Close with production extensions and security requirements.
 
 ## Validation
 
-The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, and conflicting duplicate IDs.
+The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, conflicting duplicate IDs, successful manual correction, unresolved correction, and a correction that would become an exact duplicate.
 
 Recommended manual acceptance checks:
 
@@ -202,6 +218,9 @@ Recommended manual acceptance checks:
 - Upload a file with a missing required column.
 - Upload rows with invalid numbers or dates.
 - Upload a duplicate order ID.
+- Correct a quarantined value and confirm the record is republished only after all rules pass.
+- Submit a partial or duplicate-producing correction and confirm the row is not added to the trusted dataset.
+- Confirm accepted edits appear in the manual correction audit and immediately affect KPI and analyst results.
 - Confirm that KPI values change with a different valid dataset.
 - Confirm that copilot answers reflect the current data.
 - Check the interface at desktop and mobile widths.

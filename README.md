@@ -2,7 +2,7 @@
 
 PulseOps is an interactive portfolio project that demonstrates how a Forward-Deployed Engineer can take a loosely defined customer problem and turn it into a usable data product.
 
-The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
+The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, supports human-verified correction and revalidation, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
 
 ![PulseOps social preview](public/og.png)
 
@@ -25,6 +25,12 @@ Transform does not always mean automatically “fix everything.” For example:
 
 This approach protects the reliability of the published dataset: deterministic formatting problems are corrected, while ambiguous business values remain visible for investigation instead of being silently changed.
 
+### How quarantined records become trusted
+
+Quarantine is a review queue, not a dead end. A customer can open **Review & correct** for a quarantined row, confirm the intended value with the source system or record owner, enter the verified correction, and select **Validate & republish**. PulseOps reruns the complete ETL contract—including type, date, financial, and duplicate checks—before allowing that row into the trusted dataset.
+
+If any problem remains, the record stays quarantined and the interface explains why. If it passes, PulseOps immediately refreshes the trusted-row count, data-quality comparison, KPIs, downloadable cleaned CSV, and SQL-backed analyst answers. A session audit records the source row, time, and before/after values for every accepted manual correction.
+
 ## What the Project Does
 
 PulseOps models a common customer engagement: regional teams send daily CSV extracts, but business leaders need one reliable view of revenue, margin, delivery performance, and data quality.
@@ -34,8 +40,9 @@ The application provides an end-to-end workflow:
 1. **Extract** — Load a CSV sales file or use the included demonstration dataset.
 2. **Validate** — Check required columns, missing values, data types, duplicate IDs, dates, and financial business rules without changing the raw upload.
 3. **Transform** — Normalize safe formatting differences, remove exact duplicates, and quarantine values that would require guessing.
-4. **Publish** — Recalculate KPIs and regional/category views from trusted rows only, with a downloadable cleaned CSV.
-5. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality. The app maps supported questions to approved SQL templates, runs them against the in-memory trusted table, and exposes the query behind each answer.
+4. **Review** — Let the customer enter source-verified corrections; rerun the full data contract and retain a before/after audit trail.
+5. **Publish** — Recalculate KPIs and regional/category views from trusted rows only, with a downloadable cleaned CSV.
+6. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality. The app maps supported questions to approved SQL templates, runs them against the in-memory trusted table, and exposes the query behind each answer.
 
 ```mermaid
 flowchart LR
@@ -44,6 +51,8 @@ flowchart LR
     C --> D{Valid row?}
     D -->|Yes| E[Trusted analytical dataset]
     D -->|No| F[Quarantine and issue log]
+    F --> I[Customer verifies correction]
+    I --> B
     E --> G[KPI dashboard]
     E --> H[Analyst copilot]
 ```
@@ -57,6 +66,10 @@ flowchart LR
 - Exact-duplicate removal and conflicting-ID quarantine
 - Invalid-row quarantine before aggregation
 - Row-level quarantine table with the original value and validation reason
+- Customer correction form that highlights the failed fields and preserves original values
+- Full-contract revalidation before a corrected record can be republished
+- Immediate KPI, cleaned-CSV, and analyst-query refresh after accepted corrections
+- Session audit trail with source row and before/after values
 - Pipeline status and execution trace
 - Before-and-after data-quality comparison and transformation summary
 - Downloadable cleaned CSV after a successful pipeline run
@@ -126,9 +139,11 @@ Natural-language wording selects only from allowlisted query templates; typed te
 4. Confirm that the raw file is extracted but still waiting for ETL.
 5. Select **Run ETL pipeline**.
 6. Review safe corrections, removed duplicates, and the row-level quarantine reasons.
-7. Download the cleaned CSV and inspect the executive KPIs.
-8. Ask Pulse: `Show the top 2 regions by revenue`.
-9. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
+7. For a quarantined row, select **Review & correct**, enter only a source-verified value, then select **Validate & republish**.
+8. Confirm the trusted-row count, KPIs, cleaned CSV, and manual correction audit update after the record passes.
+9. Download the cleaned CSV and inspect the executive KPIs.
+10. Ask Pulse: `Show the top 2 regions by revenue`.
+11. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
 
 ## Run Locally
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSalesCsv, extractCsv, runEtl } from "../app/etl.ts";
+import { createSalesCsv, extractCsv, runEtl, validateManualCorrection } from "../app/etl.ts";
 
 const messyCsv = `order_id,date,region,category,revenue,cost,status
  ord-1 ,7/21/2026, west , beverages ,"$1,200",800, delivered
@@ -83,4 +83,73 @@ test("rejects files that do not meet the data contract", () => {
   assert.equal(extracted.ok, false);
   if (extracted.ok) return;
   assert.match(extracted.error, /Missing required columns/);
+});
+
+test("publishes a manually corrected quarantined row and preserves its audit changes", () => {
+  const correctionCsv = `order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,,400,Delivered`;
+  const extracted = extractCsv(correctionCsv);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const currentResult = runEtl(extracted.records);
+  const sourceRecord = extracted.records.find((record) => record.sourceRow === 3);
+  assert.ok(sourceRecord);
+
+  const correction = validateManualCorrection(
+    extracted.records,
+    currentResult,
+    3,
+    { ...sourceRecord.values, revenue: "700" },
+  );
+
+  assert.equal(correction.ok, true);
+  if (!correction.ok) return;
+  assert.equal(correction.result.rows.length, 2);
+  assert.equal(correction.result.quarantinedRows, 0);
+  assert.equal(correction.trustedRowsAdded, 1);
+  assert.deepEqual(correction.changes, [{ field: "revenue", before: "", after: "700" }]);
+  assert.equal(extracted.records[1].values.revenue, "");
+});
+
+test("keeps an unresolved manual correction in quarantine", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-13-01,West,Sports,700,400,Shipped`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const currentResult = runEtl(extracted.records);
+  const correction = validateManualCorrection(
+    extracted.records,
+    currentResult,
+    2,
+    { ...extracted.records[0].values, region: "South" },
+  );
+
+  assert.equal(correction.ok, false);
+  if (correction.ok) return;
+  assert.match(correction.message, /still fails the data contract/);
+  assert.equal(correction.problems[0].field, "date");
+  assert.match(correction.problems[0].message, /month 13/);
+});
+
+test("does not publish a manual correction that becomes an exact duplicate", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,-50,20,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const currentResult = runEtl(extracted.records);
+  const correction = validateManualCorrection(
+    extracted.records,
+    currentResult,
+    3,
+    { ...extracted.records[0].values },
+  );
+
+  assert.equal(correction.ok, false);
+  if (correction.ok) return;
+  assert.match(correction.message, /removed as a duplicate/);
 });
