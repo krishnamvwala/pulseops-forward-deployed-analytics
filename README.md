@@ -10,7 +10,7 @@ The application accepts retail sales data, validates it, runs an ETL-style workf
 
 **[Open PulseOps](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev)**
 
-The hosted application is a private portfolio deployment. The repository contains no client or employer data.
+The hosted application is a public portfolio deployment. The repository contains no client or employer data.
 
 ## What the Project Does
 
