@@ -30,7 +30,8 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Simple ingestion | Browser-based CSV upload and sample-file download |
 | Repeatable input format | Seven-column data contract |
 | Data-quality controls | Schema, completeness, type, uniqueness, date, and business-rule checks |
-| Error isolation | Invalid rows excluded from analytical calculations |
+| Error isolation | Risky rows quarantined before analytical calculations |
+| Safe correction | Formatting, date, and numeric normalization with a correction log |
 | Operational transparency | Four-stage pipeline execution trace |
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
 | Performance investigation | Regional ranking and category economics |
@@ -45,7 +46,9 @@ flowchart TB
         A[CSV upload]
         B[Header mapping]
         C[Row validation]
-        D[Typed sales records]
+        D[Safe transformations]
+        I[Quarantine]
+        J[Cleaned CSV]
         E[KPI calculations]
         F[Regional and category analysis]
         G[Analyst copilot]
@@ -53,10 +56,12 @@ flowchart TB
     end
 
     A --> B --> C
-    C -->|Valid| D
-    C -->|Error or warning| H
+    C -->|Safe to correct| D
+    C -->|Risky or ambiguous| I
+    C -->|Finding| H
     D --> E
     D --> F
+    D --> J
     E --> G
     F --> G
 ```
@@ -67,7 +72,7 @@ All data processing occurs in the browser. The demonstration does not send uploa
 
 ### 1. Extract
 
-The application reads the selected CSV with the browser `FileReader` API. The first row is normalized into lowercase column names and compared with the required data contract.
+The application reads the selected CSV with the browser `FileReader` API. The first row is normalized into lowercase column names and compared with the required data contract. At this stage, the source records remain raw and the dashboard waits for the user to run ETL.
 
 ### 2. Validate
 
@@ -77,18 +82,18 @@ The application checks each source row for:
 - Numeric revenue and cost
 - Non-negative financial values
 - Parseable dates
-- Repeated order identifiers
+- Exact and conflicting repeated order identifiers
 - Cost greater than revenue
 
-Errors prevent a row from entering the trusted analytical dataset. Warnings remain visible but do not automatically remove the row.
+Findings are classified by action. A value is corrected only when the transformation is deterministic. A row is quarantined when repairing it would require inventing business data.
 
 ### 3. Transform
 
-Accepted values are converted to a typed `SalesRow` structure. Revenue and cost become numbers, while the remaining fields are normalized as text values.
+Accepted values are converted to a typed `SalesRow` structure. The pipeline trims whitespace, standardizes casing and known labels, converts supported dates to ISO format, and removes currency separators from numeric fields. Exact duplicate records are removed once. Missing values, invalid dates or numbers, negative financial values, cost above revenue, and conflicting duplicate IDs are quarantined.
 
 ### 4. Publish
 
-The interface recomputes KPI cards, region rankings, category margins, quality checks, and copilot context from the validated rows.
+The interface compares source quality with published quality, reports corrections and exceptions, enables a cleaned-CSV download, and recomputes KPI cards, region rankings, category margins, and copilot context from published rows only.
 
 ## Business Metrics
 
@@ -135,6 +140,7 @@ The design intentionally does not claim to be a production AI assistant. It is a
 - The customer objective appears before technical controls.
 - Pipeline stages provide understandable data lineage.
 - Validation uses plain-language checks rather than only error codes.
+- The interface separates corrected values from quarantined records so users can see what changed and why.
 - KPIs show both the headline result and supporting context.
 - Suggested questions help a new user discover the copilot.
 - The portfolio disclosure separates demonstrated capability from client claims.
@@ -174,17 +180,18 @@ Produced a Cloudflare-compatible build and a hosted demonstration with a custom 
 
 1. Explain the fictional customer objective.
 2. Download or open the supplied sample CSV.
-3. Upload the file and review source-versus-valid row counts.
+3. Upload the file and show that it is extracted but not yet transformed.
 4. Run the ETL pipeline and explain each stage.
-5. Review the data-contract checks and quality score.
-6. Compare regional revenue and category margins.
-7. Ask the copilot which region leads revenue.
-8. Explain that answers are calculated from the loaded dataset.
-9. Close with production extensions and security requirements.
+5. Review corrections, removed duplicates, quarantined rows, and before/after quality.
+6. Download the cleaned CSV.
+7. Compare regional revenue and category margins.
+8. Ask the copilot which region leads revenue.
+9. Explain that answers are calculated from the published dataset.
+10. Close with production extensions and security requirements.
 
 ## Validation
 
-The application passed its deployment build using the included `npm run build` workflow before publication.
+The application passed its deployment build, server-render test, and automated messy-data ETL tests before publication. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, and conflicting duplicate IDs.
 
 Recommended manual acceptance checks:
 
@@ -232,14 +239,15 @@ Recommended manual acceptance checks:
 
 ## Repository and Deployment
 
-- Live application: [PulseOps](https://pulseops-krishna-mvwala.mvwalakrishna.chatgpt.site)
+- Live application: [PulseOps](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev)
 - Application source: React, TypeScript, vinext, and Vite
 - Deployment shape: Cloudflare-compatible output
 - Data storage: Session-only for the current portfolio version
 
 ## Author
 
-Krishna Mvwala  
+Krishna Mvwala
+
 Senior Data Analyst | Business Intelligence Developer
 
 This report describes an independent portfolio project. It does not represent a production system delivered for a named customer or employer.

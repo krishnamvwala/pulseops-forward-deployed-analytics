@@ -1,33 +1,13 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-
-type SalesRow = {
-  order_id: string;
-  date: string;
-  region: string;
-  category: string;
-  revenue: number;
-  cost: number;
-  status: string;
-};
-
-type DataIssue = {
-  row: number;
-  field: string;
-  message: string;
-  severity: "error" | "warning";
-};
-
-const requiredColumns = [
-  "order_id",
-  "date",
-  "region",
-  "category",
-  "revenue",
-  "cost",
-  "status",
-];
+import {
+  createSalesCsv,
+  extractCsv,
+  recordsFromSalesRows,
+  runEtl,
+} from "./etl";
+import type { EtlResult, RawSalesRecord, SalesRow } from "./etl";
 
 const demoRows: SalesRow[] = [
   { order_id: "ORD-1001", date: "2026-07-21", region: "South", category: "Beverages", revenue: 18450, cost: 11260, status: "Delivered" },
@@ -52,51 +32,33 @@ const demoRows: SalesRow[] = [
   { order_id: "ORD-1020", date: "2026-07-30", region: "West", category: "Beverages", revenue: 22640, cost: 13680, status: "Delivered" },
 ];
 
+const demoRecords = recordsFromSalesRows(demoRows);
+const demoResult = runEtl(demoRecords);
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   maximumFractionDigits: 0,
 });
 
-function parseCsvLine(line: string) {
-  const values: string[] = [];
-  let current = "";
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === '"' && line[index + 1] === '"') {
-      current += '"';
-      index += 1;
-    } else if (character === '"') {
-      quoted = !quoted;
-    } else if (character === "," && !quoted) {
-      values.push(current.trim());
-      current = "";
-    } else {
-      current += character;
-    }
-  }
-
-  values.push(current.trim());
-  return values;
-}
-
-function createSampleCsv() {
-  const header = requiredColumns.join(",");
-  const lines = demoRows.map((row) =>
-    [row.order_id, row.date, row.region, row.category, row.revenue, row.cost, row.status].join(","),
-  );
-  return [header, ...lines].join("\n");
+function downloadCsv(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
-  const [rows, setRows] = useState<SalesRow[]>(demoRows);
-  const [issues, setIssues] = useState<DataIssue[]>([]);
+  const [rawRecords, setRawRecords] = useState<RawSalesRecord[]>(demoRecords);
+  const [rows, setRows] = useState<SalesRow[]>(demoResult.rows);
+  const [etlResult, setEtlResult] = useState<EtlResult | null>(demoResult);
   const [sourceName, setSourceName] = useState("retail_sales_demo.csv");
-  const [rawRowCount, setRawRowCount] = useState(demoRows.length);
+  const [rawRowCount, setRawRowCount] = useState(demoRecords.length);
   const [pipelineStatus, setPipelineStatus] = useState<"ready" | "running" | "complete">("complete");
-  const [lastRun, setLastRun] = useState("Demo pipeline • 6:42 AM");
+  const [lastRun, setLastRun] = useState("Demo pipeline • ready to explore");
   const [uploadError, setUploadError] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState(
@@ -104,13 +66,17 @@ export default function Home() {
   );
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const issues = etlResult?.issues ?? [];
+  const corrections = etlResult?.corrections ?? [];
+  const trustedCount = etlResult?.rows.length ?? 0;
+  const quarantinedCount = etlResult?.quarantinedRows ?? 0;
+  const sourceQuality = etlResult?.sourceQualityScore ?? 0;
+  const publishedQuality = etlResult?.publishedQualityScore ?? 0;
+
   const analytics = useMemo(() => {
     const revenue = rows.reduce((total, row) => total + row.revenue, 0);
     const cost = rows.reduce((total, row) => total + row.cost, 0);
     const lateOrders = rows.filter((row) => row.status.toLowerCase() === "late").length;
-    const uniqueIds = new Set(rows.map((row) => row.order_id));
-    const duplicateCount = rows.length - uniqueIds.size;
-    const qualityScore = Math.max(0, 100 - issues.filter((issue) => issue.severity === "error").length * 8 - issues.filter((issue) => issue.severity === "warning").length * 3 - duplicateCount * 5);
 
     const byRegion = Object.entries(
       rows.reduce<Record<string, number>>((totals, row) => {
@@ -143,116 +109,59 @@ export default function Home() {
       grossMargin: revenue ? ((revenue - cost) / revenue) * 100 : 0,
       lateOrders,
       onTimeRate: rows.length ? ((rows.length - lateOrders) / rows.length) * 100 : 0,
-      duplicateCount,
-      qualityScore,
       byRegion,
       byCategory,
     };
-  }, [rows, issues]);
+  }, [rows]);
 
   const maxRegionRevenue = Math.max(...analytics.byRegion.map((region) => region.value), 1);
 
   function downloadSample() {
-    const blob = new Blob([createSampleCsv()], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "pulseops_sample_sales.csv";
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadCsv(createSalesCsv(demoRows), "pulseops_sample_sales.csv");
+  }
+
+  function downloadCleaned() {
+    if (!rows.length || pipelineStatus !== "complete") return;
+    const baseName = sourceName.replace(/\.csv$/i, "");
+    downloadCsv(createSalesCsv(rows), `${baseName}_cleaned.csv`);
   }
 
   function parseUpload(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
-      const content = String(reader.result ?? "").replace(/\r/g, "").trim();
-      const lines = content.split("\n").filter(Boolean);
-      if (lines.length < 2) {
-        setUploadError("The file needs a header and at least one data row.");
+      const extracted = extractCsv(String(reader.result ?? ""));
+      if ("error" in extracted) {
+        setUploadError(extracted.error);
         return;
       }
 
-      const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
-      const missingColumns = requiredColumns.filter((column) => !headers.includes(column));
-      if (missingColumns.length) {
-        setUploadError(`Missing required columns: ${missingColumns.join(", ")}`);
-        return;
-      }
-
-      const nextRows: SalesRow[] = [];
-      const nextIssues: DataIssue[] = [];
-      const seenIds = new Set<string>();
-
-      lines.slice(1).forEach((line, rowIndex) => {
-        const values = parseCsvLine(line);
-        const record = Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
-        const displayRow = rowIndex + 2;
-        const revenue = Number(record.revenue);
-        const cost = Number(record.cost);
-        let hasError = false;
-
-        for (const field of ["order_id", "date", "region", "category", "status"]) {
-          if (!record[field]) {
-            nextIssues.push({ row: displayRow, field, message: "Required value is missing", severity: "error" });
-            hasError = true;
-          }
-        }
-        if (!Number.isFinite(revenue) || !Number.isFinite(cost)) {
-          nextIssues.push({ row: displayRow, field: "revenue / cost", message: "Expected numeric values", severity: "error" });
-          hasError = true;
-        } else if (revenue < 0 || cost < 0) {
-          nextIssues.push({ row: displayRow, field: "revenue / cost", message: "Negative financial value", severity: "error" });
-          hasError = true;
-        } else if (cost > revenue) {
-          nextIssues.push({ row: displayRow, field: "cost", message: "Cost exceeds revenue", severity: "warning" });
-        }
-        if (record.date && Number.isNaN(Date.parse(record.date))) {
-          nextIssues.push({ row: displayRow, field: "date", message: "Invalid date format", severity: "error" });
-          hasError = true;
-        }
-        if (record.order_id && seenIds.has(record.order_id)) {
-          nextIssues.push({ row: displayRow, field: "order_id", message: "Duplicate order ID", severity: "warning" });
-        }
-        seenIds.add(record.order_id);
-
-        if (!hasError) {
-          nextRows.push({
-            order_id: record.order_id,
-            date: record.date,
-            region: record.region,
-            category: record.category,
-            revenue,
-            cost,
-            status: record.status,
-          });
-        }
-      });
-
-      if (!nextRows.length) {
-        setUploadError("No valid rows remained after validation. Review the required format and try again.");
-        setIssues(nextIssues);
-        return;
-      }
-
-      setRows(nextRows);
-      setIssues(nextIssues);
+      setRawRecords(extracted.records);
+      setRows([]);
+      setEtlResult(null);
       setSourceName(file.name);
-      setRawRowCount(lines.length - 1);
+      setRawRowCount(extracted.rowCount);
       setUploadError("");
       setPipelineStatus("ready");
-      setLastRun("File validated • ready to transform");
-      setAnswer("Your file is loaded. Run the pipeline, then ask me about its performance or quality.");
+      setLastRun("Extracted • ready to validate and transform");
+      setAnswer("Your raw file is loaded but has not been cleaned. Run the ETL pipeline before asking about performance.");
     };
     reader.readAsText(file);
   }
 
   function runPipeline() {
+    if (!rawRecords.length || pipelineStatus === "running") return;
     setPipelineStatus("running");
     setLastRun("Validating and transforming rows…");
     window.setTimeout(() => {
+      const result = runEtl(rawRecords);
+      setRows(result.rows);
+      setEtlResult(result);
       setPipelineStatus("complete");
       setLastRun(`Completed • ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
-    }, 850);
+      setAnswer(
+        `The pipeline published ${result.rows.length} trusted rows, corrected ${result.corrections.length} values, removed ${result.duplicatesResolved} exact duplicate${result.duplicatesResolved === 1 ? "" : "s"}, and quarantined ${result.quarantinedRows} risky row${result.quarantinedRows === 1 ? "" : "s"}.`,
+      );
+    }, 650);
   }
 
   function answerQuestion(value = question) {
@@ -261,16 +170,18 @@ export default function Home() {
     const bestCategory = analytics.byCategory[0];
 
     if (!value.trim()) return;
-    if (normalized.includes("region") || normalized.includes("revenue")) {
+    if (pipelineStatus !== "complete" || !etlResult) {
+      setAnswer("Run the ETL pipeline first so I answer from the cleaned, published dataset—not the raw upload.");
+    } else if (normalized.includes("region") || normalized.includes("revenue")) {
       setAnswer(`${bestRegion?.name ?? "No region"} leads revenue at ${money.format(bestRegion?.value ?? 0)}. It contributes ${analytics.revenue ? (((bestRegion?.value ?? 0) / analytics.revenue) * 100).toFixed(1) : 0}% of total revenue.`);
     } else if (normalized.includes("margin") || normalized.includes("category")) {
       setAnswer(`${bestCategory?.name ?? "No category"} has the strongest gross margin at ${bestCategory?.margin.toFixed(1) ?? 0}%. I would validate whether that advantage is driven by pricing, product mix, or lower fulfillment cost.`);
     } else if (normalized.includes("quality") || normalized.includes("issue") || normalized.includes("trust")) {
-      setAnswer(`The current quality score is ${analytics.qualityScore}%. Validation found ${issues.length} issue${issues.length === 1 ? "" : "s"} across ${rawRowCount} source rows, with ${rows.length} rows available for analysis.`);
+      setAnswer(`Source quality was ${sourceQuality}% and published quality is ${publishedQuality}%. The pipeline corrected ${corrections.length} values, resolved ${etlResult.duplicatesResolved} exact duplicates, and quarantined ${quarantinedCount} risky rows.`);
     } else if (normalized.includes("late") || normalized.includes("operation") || normalized.includes("focus")) {
       setAnswer(`${analytics.lateOrders} orders are late, producing an on-time rate of ${analytics.onTimeRate.toFixed(1)}%. I would start by comparing late orders by region and category, then inspect upstream fulfillment timestamps.`);
     } else {
-      setAnswer(`This dataset contains ${rows.length} valid orders and ${money.format(analytics.revenue)} in revenue at a ${analytics.grossMargin.toFixed(1)}% gross margin. Try asking about the top region, best category, late orders, or data quality.`);
+      setAnswer(`The published dataset contains ${rows.length} trusted orders and ${money.format(analytics.revenue)} in revenue at a ${analytics.grossMargin.toFixed(1)}% gross margin. Try asking about the top region, best category, late orders, or data quality.`);
     }
     setQuestion("");
   }
@@ -282,39 +193,39 @@ export default function Home() {
     "Where should operations focus?",
   ];
 
+  const fileDetail = pipelineStatus === "complete" && etlResult
+    ? `${rawRowCount} source rows • ${trustedCount} trusted • ${quarantinedCount} quarantined`
+    : `${rawRowCount} source rows • waiting for ETL`;
+
+  const stages = [
+    ["01", "Extract", `${rawRowCount} raw rows`],
+    ["02", "Validate", etlResult ? `${issues.length} issues detected` : "Waiting for run"],
+    ["03", "Transform", etlResult ? `${corrections.length} corrected • ${quarantinedCount} quarantined` : "Safe rules pending"],
+    ["04", "Publish", etlResult ? `${trustedCount} trusted rows` : "Not published"],
+  ];
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand-lockup">
           <div className="brand-mark">P</div>
-          <div>
-            <strong>PulseOps</strong>
-            <span>Data operations</span>
-          </div>
+          <div><strong>PulseOps</strong><span>Data operations</span></div>
         </div>
-
         <nav aria-label="Primary navigation">
           <a className="nav-item active" href="#overview"><span>01</span>Overview</a>
           <a className="nav-item" href="#pipeline"><span>02</span>Pipeline</a>
           <a className="nav-item" href="#analysis"><span>03</span>Analysis</a>
           <a className="nav-item" href="#copilot"><span>04</span>Ask Pulse</a>
         </nav>
-
         <div className="project-owner">
           <div className="avatar">KM</div>
-          <div>
-            <strong>Krishna Mvwala</strong>
-            <span>FDE portfolio project</span>
-          </div>
+          <div><strong>Krishna Mvwala</strong><span>FDE portfolio project</span></div>
         </div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Forward-deployed analytics workspace</p>
-            <h1>Retail performance command center</h1>
-          </div>
+          <div><p className="eyebrow">Forward-deployed analytics workspace</p><h1>Retail performance command center</h1></div>
           <div className="topbar-actions">
             <span className="scenario-badge">Portfolio scenario</span>
             <button className="secondary-button" onClick={downloadSample}>Download sample CSV</button>
@@ -329,22 +240,15 @@ export default function Home() {
               <p>Unify regional extracts, enforce data contracts, publish executive KPIs, and give operations a fast way to investigate performance.</p>
             </div>
             <div className="objective-meta">
-              <span>Success criteria</span>
-              <strong>Reliable refresh</strong>
-              <strong>Traceable quality</strong>
-              <strong>Actionable answers</strong>
+              <span>Success criteria</span><strong>Reliable refresh</strong><strong>Traceable quality</strong><strong>Actionable answers</strong>
             </div>
           </section>
 
           <section className="ingestion-card" id="pipeline">
             <div className="card-heading">
-              <div>
-                <p className="section-kicker">Ingestion control</p>
-                <h2>Load a customer sales extract</h2>
-              </div>
+              <div><p className="section-kicker">Ingestion control</p><h2>Load a customer sales extract</h2></div>
               <span className={`status-pill ${pipelineStatus}`}>{pipelineStatus}</span>
             </div>
-
             <input
               ref={fileRef}
               className="visually-hidden"
@@ -359,10 +263,9 @@ export default function Home() {
               <span className="browse-label">Browse</span>
             </button>
             {uploadError && <p className="error-message" role="alert">{uploadError}</p>}
-
             <div className="file-row">
-              <div className="file-name"><span>✓</span><div><strong>{sourceName}</strong><small>{rawRowCount} source rows • {rows.length} valid rows</small></div></div>
-              <button className="primary-button" onClick={runPipeline} disabled={pipelineStatus === "running"}>
+              <div className="file-name"><span>✓</span><div><strong>{sourceName}</strong><small>{fileDetail}</small></div></div>
+              <button className="primary-button" onClick={runPipeline} disabled={pipelineStatus === "running" || !rawRecords.length}>
                 {pipelineStatus === "running" ? "Running pipeline…" : "Run ETL pipeline"}
               </button>
             </div>
@@ -374,12 +277,7 @@ export default function Home() {
               <span className="last-run">{lastRun}</span>
             </div>
             <div className="pipeline-flow">
-              {[
-                ["01", "Extract", sourceName],
-                ["02", "Validate", `${rawRowCount} rows checked`],
-                ["03", "Transform", "Types + business rules"],
-                ["04", "Publish", `${rows.length} trusted rows`],
-              ].map(([number, label, detail], index) => (
+              {stages.map(([number, label, detail], index) => (
                 <div className="pipeline-stage" key={label}>
                   <span className="stage-number">{number}</span>
                   <div><strong>{label}</strong><small>{detail}</small></div>
@@ -391,52 +289,77 @@ export default function Home() {
 
           <section className="quality-card">
             <div className="card-heading compact">
-              <div><p className="section-kicker">Data contract</p><h2>Quality checks</h2></div>
-              <strong className="quality-score">{analytics.qualityScore}%</strong>
+              <div><p className="section-kicker">Data contract</p><h2>Before &amp; after quality</h2></div>
+              <span className="traceability-badge">Traceable</span>
             </div>
-            <div className="check-list">
-              {[
-                ["Schema", "7 required columns", true],
-                ["Completeness", `${issues.filter((issue) => issue.message.includes("missing")).length} missing values`, !issues.some((issue) => issue.message.includes("missing"))],
-                ["Uniqueness", `${analytics.duplicateCount} duplicate IDs`, analytics.duplicateCount === 0],
-                ["Business rules", `${issues.length} issues logged`, issues.length === 0],
-              ].map(([label, detail, passed]) => (
-                <div className="check-item" key={String(label)}>
-                  <span className={passed ? "check-pass" : "check-warn"}>{passed ? "✓" : "!"}</span>
-                  <div><strong>{label}</strong><small>{detail}</small></div>
-                </div>
-              ))}
+            <div className="quality-comparison">
+              <div className="quality-column source-quality">
+                <span className="quality-label">Source quality</span>
+                <strong>{etlResult ? `${sourceQuality}%` : "—"}</strong>
+                <div className="quality-bar"><span style={{ width: `${sourceQuality}%` }} /></div>
+                <small>{etlResult ? `${issues.length} validation findings` : "Run the pipeline to measure"}</small>
+              </div>
+              <div className="quality-divider"><span>→</span></div>
+              <div className="quality-column published-quality">
+                <span className="quality-label">Published quality</span>
+                <strong>{etlResult ? `${publishedQuality}%` : "—"}</strong>
+                <div className="quality-bar"><span style={{ width: `${publishedQuality}%` }} /></div>
+                <small>{etlResult ? `${trustedCount} rows pass all publish rules` : "Nothing published yet"}</small>
+              </div>
             </div>
-            <p className="quality-note">Invalid rows are quarantined before KPI calculation. Warnings remain visible for investigation.</p>
+            <p className="quality-note">Safe formatting problems are corrected. Ambiguous or risky records are quarantined before KPI calculation.</p>
+          </section>
+
+          <section className="transformation-card">
+            <div className="card-heading compact">
+              <div><p className="section-kicker">Transformation summary</p><h2>Safe corrections and exceptions</h2></div>
+              <span className={`status-pill ${pipelineStatus}`}>{pipelineStatus === "complete" ? "published" : pipelineStatus}</span>
+            </div>
+            <div className="transformation-grid">
+              <article className="transformation-item corrected">
+                <span className="summary-icon">✓</span>
+                <div><strong>{corrections.length} values corrected automatically</strong><small>Whitespace, casing, date formats, and numeric formatting</small></div>
+              </article>
+              <article className="transformation-item duplicate">
+                <span className="summary-icon">↻</span>
+                <div><strong>{etlResult?.duplicatesResolved ?? 0} exact duplicates resolved</strong><small>Identical order records are removed once and logged</small></div>
+              </article>
+              <article className="transformation-item quarantined">
+                <span className="summary-icon">!</span>
+                <div><strong>{quarantinedCount} rows quarantined for review</strong><small>Missing values, invalid dates, negative values, and conflicting IDs</small></div>
+              </article>
+            </div>
+            <div className="transformation-footer">
+              <div><strong>Every change is traceable.</strong><span>No missing or risky business values are guessed.</span></div>
+              <button className="download-clean-button" onClick={downloadCleaned} disabled={pipelineStatus !== "complete" || !rows.length}>Download cleaned CSV</button>
+            </div>
           </section>
 
           <section className="analytics-card" id="analysis">
             <div className="analytics-heading">
               <div><p className="section-kicker">Decision layer</p><h2>Executive performance</h2></div>
-              <span>Updated from {sourceName}</span>
+              <span>{etlResult ? `Updated from ${sourceName}` : "Waiting for a published dataset"}</span>
             </div>
             <div className="kpi-grid">
-              <article><span>Total revenue</span><strong>{money.format(analytics.revenue)}</strong><small>{rows.length} valid orders</small></article>
+              <article><span>Total revenue</span><strong>{money.format(analytics.revenue)}</strong><small>{rows.length} trusted orders</small></article>
               <article><span>Gross margin</span><strong>{analytics.grossMargin.toFixed(1)}%</strong><small>{money.format(analytics.revenue - analytics.cost)} contribution</small></article>
               <article><span>On-time rate</span><strong>{analytics.onTimeRate.toFixed(1)}%</strong><small>{analytics.lateOrders} late orders</small></article>
-              <article><span>Data quality</span><strong>{analytics.qualityScore}%</strong><small>{issues.length ? `${issues.length} issues to review` : "All checks passed"}</small></article>
+              <article><span>Data quality</span><strong>{publishedQuality}%</strong><small>{etlResult ? `${sourceQuality}% before cleaning` : "Run pipeline to publish"}</small></article>
             </div>
-
             <div className="analysis-split">
               <div className="chart-panel">
                 <div className="panel-title"><div><strong>Revenue by region</strong><span>Ranked contribution</span></div><span>USD</span></div>
                 <div className="bar-chart">
                   {analytics.byRegion.map((region, index) => (
                     <div className="bar-row" key={region.name}>
-                      <span className="rank">0{index + 1}</span>
-                      <strong>{region.name}</strong>
+                      <span className="rank">0{index + 1}</span><strong>{region.name}</strong>
                       <div className="bar-track"><div className="bar-fill" style={{ width: `${(region.value / maxRegionRevenue) * 100}%` }} /></div>
                       <span>{money.format(region.value)}</span>
                     </div>
                   ))}
+                  {!analytics.byRegion.length && <p className="empty-state">Run the pipeline to publish regional performance.</p>}
                 </div>
               </div>
-
               <div className="table-panel">
                 <div className="panel-title"><div><strong>Category economics</strong><span>Margin performance</span></div></div>
                 <div className="data-table" role="table" aria-label="Category margin performance">
@@ -454,7 +377,7 @@ export default function Home() {
           <section className="copilot-card" id="copilot">
             <div className="copilot-intro">
               <div className="pulse-orb">P</div>
-              <div><p className="section-kicker">Analyst copilot</p><h2>Ask Pulse about the loaded data</h2><p>Answers are calculated from the current validated dataset—not a static dashboard.</p></div>
+              <div><p className="section-kicker">Analyst copilot</p><h2>Ask Pulse about the loaded data</h2><p>Answers are calculated from the current published dataset—not a static dashboard.</p></div>
             </div>
             <div className="answer-box"><span>Pulse</span><p>{answer}</p></div>
             <div className="suggestion-row">
@@ -466,10 +389,7 @@ export default function Home() {
             </div>
           </section>
 
-          <footer>
-            <span>Designed and built by <strong>Krishna Mvwala</strong></span>
-            <span>Portfolio scenario • No client data used</span>
-          </footer>
+          <footer><span>Designed and built by <strong>Krishna Mvwala</strong></span><span>Portfolio scenario • No client data used</span></footer>
         </div>
       </section>
     </main>

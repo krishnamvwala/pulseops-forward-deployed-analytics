@@ -2,7 +2,7 @@
 
 PulseOps is an interactive portfolio project that demonstrates how a Forward-Deployed Engineer can take a loosely defined customer problem and turn it into a usable data product.
 
-The application accepts retail sales data, validates it, runs an ETL-style workflow, calculates business KPIs, and provides a simple analyst copilot for investigating the loaded dataset.
+The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, calculates business KPIs from trusted rows, and provides a simple analyst copilot for investigating the published dataset.
 
 ![PulseOps social preview](public/og.png)
 
@@ -19,9 +19,9 @@ PulseOps models a common customer engagement: regional teams send daily CSV extr
 The application provides an end-to-end workflow:
 
 1. **Extract** — Load a CSV sales file or use the included demonstration dataset.
-2. **Validate** — Check required columns, missing values, data types, duplicate IDs, dates, and financial business rules.
-3. **Transform** — Convert valid fields into typed analytical records and quarantine invalid rows.
-4. **Publish** — Recalculate KPIs and regional/category views from trusted rows only.
+2. **Validate** — Check required columns, missing values, data types, duplicate IDs, dates, and financial business rules without changing the raw upload.
+3. **Transform** — Normalize safe formatting differences, remove exact duplicates, and quarantine values that would require guessing.
+4. **Publish** — Recalculate KPIs and regional/category views from trusted rows only, with a downloadable cleaned CSV.
 5. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality.
 
 ```mermaid
@@ -40,9 +40,12 @@ flowchart LR
 - CSV upload with a documented data contract
 - Downloadable sample dataset for demonstrations
 - Required-column and row-level validation
+- Safe automatic correction of whitespace, casing, dates, and formatted numbers
+- Exact-duplicate removal and conflicting-ID quarantine
 - Invalid-row quarantine before aggregation
 - Pipeline status and execution trace
-- Data-quality score and validation summaries
+- Before-and-after data-quality comparison and transformation summary
+- Downloadable cleaned CSV after a successful pipeline run
 - Revenue, gross margin, on-time delivery, and order KPIs
 - Regional revenue ranking
 - Category margin analysis
@@ -70,11 +73,11 @@ The validation layer checks:
 - Required text values
 - Numeric revenue and cost values
 - Non-negative financial values
-- Cost greater than revenue as a warning condition
+- Cost greater than revenue as a quarantine condition
 - Parseable dates
-- Duplicate order IDs
+- Exact duplicate records and conflicting duplicate order IDs
 
-Valid rows are used for dashboard calculations. Rows with errors are excluded, while warnings remain visible for investigation.
+Safe formatting differences are corrected and logged. Exact duplicate records are removed once. Rows with missing values, invalid dates or numbers, negative financial values, cost above revenue, or conflicting duplicate IDs are quarantined rather than guessed. Only published rows are used for dashboard calculations.
 
 ## KPI Definitions
 
@@ -83,7 +86,8 @@ Valid rows are used for dashboard calculations. Rows with errors are excluded, w
 | Total revenue | Sum of revenue across valid rows |
 | Gross margin | `(revenue - cost) / revenue` |
 | On-time rate | Non-late orders divided by valid orders |
-| Data-quality score | A demonstration score reduced by validation errors, warnings, and duplicates |
+| Source quality | A demonstration score reduced by findings, required corrections, and duplicates |
+| Published quality | Percentage indicating whether the released rows pass all publish rules |
 
 ## Analyst Copilot
 
@@ -102,10 +106,11 @@ This version uses deterministic in-browser analytical logic rather than an exter
 1. Open the [live application](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev).
 2. Select **Download sample CSV** or use [`sample-data/pulseops_sample_sales.csv`](sample-data/pulseops_sample_sales.csv).
 3. Upload the file.
-4. Review the validation and source-row counts.
+4. Confirm that the raw file is extracted but still waiting for ETL.
 5. Select **Run ETL pipeline**.
-6. Inspect the executive KPIs and charts.
-7. Ask Pulse: `Which region leads revenue?`
+6. Review safe corrections, removed duplicates, quarantined rows, and before/after quality.
+7. Download the cleaned CSV and inspect the executive KPIs.
+8. Ask Pulse: `Which region leads revenue?`
 
 ## Run Locally
 
@@ -147,15 +152,19 @@ No database, external API, or authentication is required for the current demonst
 
 ```text
 app/
+  etl.ts           Extraction, validation, transformation, quarantine, and CSV export
   globals.css       Application design system and responsive layout
   layout.tsx        Metadata and social-sharing configuration
-  page.tsx          CSV ingestion, ETL validation, KPIs, and copilot
+  page.tsx          Interactive pipeline controls, KPIs, and copilot
 public/
   og.png            Social-sharing preview
 sample-data/
   pulseops_sample_sales.csv
 docs/
   PROJECT_REPORT.md Detailed case study and implementation report
+tests/
+  etl.test.mjs      Messy-data transformation and quarantine tests
+  rendered-html.test.mjs
 .openai/
   hosting.json      Hosting configuration
 ```
@@ -183,7 +192,8 @@ These boundaries are intentional for a safe, portable portfolio demonstration. T
 
 ## Author
 
-**Krishna Mvwala**  
+**Krishna Mvwala**
+
 Senior Data Analyst | Business Intelligence Developer
 
 This is an independent portfolio project. All organizations, scenarios, and data shown in the application are fictional or synthetic. No confidential client, employer, patient, or customer data is used.
