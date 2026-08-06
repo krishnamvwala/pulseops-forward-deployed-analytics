@@ -210,6 +210,6 @@ These boundaries are intentional for a safe, portable portfolio demonstration. T
 
 **Krishna Mvwala**
 
-Senior Data Analyst | Business Intelligence Developer
+Senior Data Analyst | Data Engineering | Forward-Deployed Analytics
 
 This is an independent portfolio project. All organizations, scenarios, and data shown in the application are fictional or synthetic. No confidential client, employer, patient, or customer data is used.

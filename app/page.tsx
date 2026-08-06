@@ -220,7 +220,11 @@ export default function Home() {
         </nav>
         <div className="project-owner">
           <div className="avatar">KM</div>
-          <div><strong>Krishna Mvwala</strong><span>FDE portfolio project</span></div>
+          <div>
+            <strong>Krishna Mvwala</strong>
+            <span>Senior Data Analyst</span>
+            <span>Data Engineering · Forward-Deployed Analytics</span>
+          </div>
         </div>
       </aside>
 
