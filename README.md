@@ -2,7 +2,7 @@
 
 PulseOps is an interactive portfolio project that demonstrates how a Forward-Deployed Engineer can take a loosely defined customer problem and turn it into a usable data product.
 
-The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, supports human-verified correction and revalidation, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
+The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, applies a configurable revenue-outlier contract, supports human-verified correction and revalidation, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
 
 ![PulseOps social preview](public/og.png)
 
@@ -20,6 +20,7 @@ Transform does not always mean automatically “fix everything.” For example:
 
 - A missing revenue value cannot be safely guessed.
 - A negative number could be an input error or a legitimate refund, so the pipeline should not reinterpret it without business context.
+- An unusually large revenue value could be a typing error or a legitimate enterprise order, so the pipeline isolates it before it can distort KPIs.
 - Two records with the same order ID may contain conflicting information.
 - An impossible date cannot be corrected without knowing the intended date.
 
@@ -29,7 +30,7 @@ This approach protects the reliability of the published dataset: deterministic f
 
 Quarantine is a review queue, not a dead end. A customer can open **Review & correct** for a quarantined row, confirm the intended value with the source system or record owner, enter the verified correction, and select **Validate & republish**. PulseOps reruns the complete ETL contract—including type, date, financial, and duplicate checks—before allowing that row into the trusted dataset.
 
-If any problem remains, the record stays quarantined and the interface explains why. If it passes, PulseOps immediately refreshes the trusted-row count, data-quality comparison, KPIs, downloadable cleaned CSV, and SQL-backed analyst answers. A session audit records the source row, time, and before/after values for every accepted manual correction.
+If any problem remains, the record stays quarantined and the interface explains why. If it passes, PulseOps immediately refreshes the trusted-row count, data-quality comparison, KPIs, downloadable cleaned CSV, and SQL-backed analyst answers. A session audit records the source row, time, and before/after values for every accepted manual correction. A revenue outlier can also be approved unchanged as a legitimate exception, but only with a source-verified reason; the approval and publication outcome are audited separately.
 
 For larger exception queues, PulseOps renders 15 records per page inside a scrollable table, with order/source search and issue-type filters. Customers do not need to open hundreds of records individually: they can download the complete quarantine queue as a correction CSV, update only source-verified values, upload it again, review a publish-versus-still-quarantined preview, and republish all passing rows together.
 
@@ -67,6 +68,8 @@ flowchart LR
 - Safe automatic correction of whitespace, casing, dates, and formatted numbers
 - Exact-duplicate removal and conflicting-ID quarantine
 - Invalid-row quarantine before aggregation
+- Configurable revenue-per-order ceiling and conservative median/IQR outlier detection
+- Source-verified revenue-exception approval that preserves the original value and requires an audit reason
 - Row-level quarantine table with the original value and validation reason
 - Fifteen-record queue pages with a sticky header, internal scrolling, search, and issue filters
 - Customer correction form that highlights the failed fields and preserves original values
@@ -108,10 +111,20 @@ The validation layer checks:
 - Numeric revenue and cost values
 - Non-negative financial values
 - Cost greater than revenue as a quarantine condition
+- Revenue above the configured per-order ceiling
+- Adaptive revenue outliers when at least 20 numeric rows are available
 - Parseable dates
 - Exact duplicate records and conflicting duplicate order IDs
 
 Safe formatting differences are corrected and logged. Exact duplicate records are removed once. Rows with missing values, invalid dates or numbers, negative financial values, cost above revenue, or conflicting duplicate IDs are quarantined rather than guessed. Only published rows are used for dashboard calculations.
+
+### Revenue outlier policy
+
+PulseOps starts with a configurable maximum of **$100,000 per order**. A revenue value above that ceiling is quarantined before KPI calculation. The customer can change the ceiling in the data-contract panel and revalidate the complete source file; every contract change appears in the decision audit.
+
+For files with at least 20 valid numeric revenue values, an optional adaptive rule adds a second safeguard. A value is flagged statistically only when it is greater than **both** `10 × median revenue` and `Q3 + 3 × IQR`. The conservative combination reduces false positives while still catching values that are extreme relative to the current file.
+
+The pipeline never replaces an outlier with an average or capped value. A reviewer either corrects it using a value verified from the source, or approves the original value as a legitimate exception with a written reason. Approval removes only the revenue-outlier finding; any other failed rule keeps the record quarantined.
 
 ## Scale and Production Boundary
 
@@ -151,14 +164,15 @@ Natural-language wording selects only from allowlisted query templates; typed te
 4. Confirm that the raw file is extracted but still waiting for ETL.
 5. Select **Run ETL pipeline**.
 6. Review safe corrections, removed duplicates, and the row-level quarantine reasons.
-7. Search or filter the queue and confirm that only 15 records are rendered per page.
-8. For a single unusual exception, select **Review & correct**, enter only a source-verified value, then select **Validate & republish**.
-9. For a larger correction set, select **Download queue CSV**, edit verified values without changing `source_row`, and upload the file with **Upload corrected CSV**.
-10. Review the batch preview, apply it, and confirm passing rows publish while unresolved rows remain quarantined.
-11. Confirm the trusted-row count, KPIs, cleaned CSV, and correction audit update.
-12. Download the cleaned CSV and inspect the executive KPIs.
-13. Ask Pulse: `Show the top 2 regions by revenue`.
-14. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
+7. Inspect **Revenue outlier guardrail**. Change the ceiling only when the customer contract requires it, then select **Apply & revalidate**.
+8. Search or filter the queue and confirm that only 15 records are rendered per page.
+9. For a single unusual exception, select **Review & correct**. Enter a source-verified replacement and choose **Validate & republish**, or document why the unchanged value is legitimate and choose **Approve exception & revalidate**.
+10. For a larger correction set, select **Download queue CSV**, edit verified values without changing `source_row`, and upload the file with **Upload corrected CSV**.
+11. Review the batch preview, apply it, and confirm passing rows publish while unresolved rows remain quarantined.
+12. Confirm the trusted-row count, KPIs, cleaned CSV, and decision audit update.
+13. Download the cleaned CSV and inspect the executive KPIs.
+14. Ask Pulse: `Show the top 2 regions by revenue`.
+15. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
 
 ## Run Locally
 

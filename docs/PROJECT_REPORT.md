@@ -32,6 +32,8 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Data-quality controls | Schema, completeness, type, uniqueness, date, and business-rule checks |
 | Error isolation | Risky rows quarantined with source values and row-level reasons before analytical calculations |
 | Safe correction | Formatting, date, and numeric normalization with a correction log |
+| Revenue anomaly control | Configurable $100,000 default order ceiling plus a conservative median/IQR rule |
+| Governed exception approval | Source-verified reason, unchanged original revenue, complete revalidation, and audit outcome |
 | Human remediation | Source-verified edits, complete revalidation, immediate republishing, and a before/after session audit |
 | Scalable exception review | Fifteen-record pages, internal scrolling, search, issue filters, queue export, and batch re-upload |
 | Governed batch correction | Pre-publication impact preview with passing, unresolved, duplicate, and trusted-row counts |
@@ -61,11 +63,15 @@ flowchart TB
         F[Regional and category analysis]
         G[SQL-backed analyst copilot]
         H[Issue log]
+        Q[Revenue guardrail]
+        R[Verified exception approval]
     end
 
     A --> B --> C
     C -->|Safe to correct| D
     C -->|Risky or ambiguous| I
+    Q --> C
+    I --> R --> C
     I --> L --> C
     L --> M
     I --> N --> O --> P --> C
@@ -98,12 +104,14 @@ The application checks each source row for:
 - Parseable dates
 - Exact and conflicting repeated order identifiers
 - Cost greater than revenue
+- Revenue above the configured per-order ceiling
+- Conservative adaptive revenue outliers when at least 20 numeric values are available
 
-Findings are classified by action. A value is corrected only when the transformation is deterministic. A row is quarantined when repairing it would require inventing business data.
+Findings are classified by action. A value is corrected only when the transformation is deterministic. A row is quarantined when repairing it would require inventing business data. Revenue starts with a configurable $100,000 per-order ceiling. With 20 or more numeric revenue values, the optional adaptive rule flags a value only when it exceeds both 10 times the median and `Q3 + 3 × IQR`.
 
 ### 3. Transform
 
-Accepted values are converted to a typed `SalesRow` structure. The pipeline trims whitespace, standardizes casing and known labels, converts supported dates to ISO format, and removes currency separators from numeric fields. Exact duplicate records are removed once. Missing values, invalid dates or numbers, negative financial values, cost above revenue, and conflicting duplicate IDs are quarantined.
+Accepted values are converted to a typed `SalesRow` structure. The pipeline trims whitespace, standardizes casing and known labels, converts supported dates to ISO format, and removes currency separators from numeric fields. Exact duplicate records are removed once. Missing values, invalid dates or numbers, revenue outliers, negative financial values, cost above revenue, and conflicting duplicate IDs are quarantined.
 
 ### 4. Publish
 
@@ -118,6 +126,8 @@ Selecting **Validate & republish** reruns the entire dataset through the same ET
 For high-volume exception review, the queue renders no more than 15 records per page inside a fixed-height scrollable table. Users can search order IDs, source rows, values, and reasons; filter missing, date, financial, duplicate, and other issues; and move between pages without creating thousands of table elements.
 
 The batch workflow exports every quarantined source row with all original fields, issue fields, and reasons. The customer retains `source_row`, updates only values verified against the source system, and uploads the correction file. Before any state changes, PulseOps previews how many rows were submitted, edited, eligible to publish, still quarantined, or removed as duplicates, plus the net change to trusted rows. Confirmation reruns the whole dataset and refreshes every downstream consumer.
+
+A revenue outlier has a second governed path when the original amount is confirmed to be legitimate. The reviewer can approve the unchanged value only after entering a specific reason. PulseOps records the source row, order, revenue, time, reason, and publication outcome in the decision audit, then reruns the complete contract. The approval removes only the outlier finding; missing fields, invalid dates, duplicates, or other failed rules still block publication. Changes to the global revenue ceiling or adaptive-rule switch are also audited and trigger full-file revalidation.
 
 ### Demonstration Scale Versus Production Scale
 
@@ -176,6 +186,8 @@ Limits are parsed as bounded integers from 1–5, and unrecognized user text nev
 - CSV export and re-upload support customer-verified batch remediation instead of requiring hundreds of individual forms.
 - A batch preview makes partial success explicit before publication: passing rows can publish while unresolved rows stay quarantined.
 - Accepted corrections immediately refresh every downstream consumer and appear in a before/after session audit.
+- The revenue guardrail shows the active ceiling, file median, adaptive threshold, and sample size so the customer can explain why a value was flagged.
+- Legitimate high-value orders can be approved unchanged only with a source-verified reason, and both contract changes and approvals appear in the decision audit.
 - Impossible dates receive specific explanations, such as an invalid month or a day beyond the length of that month.
 - KPIs show both the headline result and supporting context.
 - Suggested questions help a new user discover the copilot, while the SQL trace makes each answer explainable.
@@ -219,26 +231,30 @@ Produced a Cloudflare-compatible build and a hosted demonstration with a custom 
 3. Upload the file and show that it is extracted but not yet transformed.
 4. Run the ETL pipeline and explain each stage.
 5. Review corrections, removed duplicates, quarantined rows, and before/after quality.
-6. Open a quarantined row, explain how the intended value would be verified with the source owner, and enter the confirmed correction.
-7. Select **Validate & republish** and show the trusted-row count, quality score, KPI, and audit updates.
-8. Search and filter the remaining queue, then explain that the interface renders 15 records per page.
-9. Download the quarantine CSV, edit several source-verified values, and upload it for batch validation.
-10. Review the publish-versus-still-quarantined preview and apply the batch.
-11. Download the cleaned CSV.
-12. Compare regional revenue and category margins.
-13. Ask the copilot to show the top two regions by revenue.
-14. Open the SQL trace and explain that the query ran only against the published dataset.
-15. Close with production extensions and security requirements.
+6. Show the revenue guardrail, its $100,000 default ceiling, and the adaptive threshold calculated for the current file.
+7. Open a quarantined row, explain how the intended value would be verified with the source owner, and enter the confirmed correction.
+8. For a confirmed large order, enter an approval reason and show that the original revenue is published unchanged and audited.
+9. Select **Validate & republish** for an edited record and show the trusted-row count, quality score, KPI, and audit updates.
+10. Search and filter the remaining queue, then explain that the interface renders 15 records per page.
+11. Download the quarantine CSV, edit several source-verified values, and upload it for batch validation.
+12. Review the publish-versus-still-quarantined preview and apply the batch.
+13. Download the cleaned CSV.
+14. Compare regional revenue and category margins.
+15. Ask the copilot to show the top two regions by revenue, open the SQL trace, and confirm that it uses only published rows.
+16. Close with production extensions and security requirements.
 
 ## Validation
 
-The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, conflicting duplicate IDs, successful manual correction, unresolved correction, duplicate-producing correction, queue CSV export, partial batch publication, and rejection of batch rows outside the active quarantine queue.
+The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, conflicting duplicate IDs, the configured revenue ceiling, adaptive statistical detection, customer threshold overrides, approved unchanged exceptions, successful manual correction, unresolved correction, duplicate-producing correction, queue CSV export, partial batch publication, and rejection of batch rows outside the active quarantine queue.
 
 Recommended manual acceptance checks:
 
 - Upload the included sample CSV.
 - Upload a file with a missing required column.
 - Upload rows with invalid numbers or dates.
+- Upload a revenue above $100,000 and confirm it is quarantined without being changed.
+- Approve a confirmed revenue exception with a reason and confirm the original value, KPI refresh, and decision audit.
+- Change the revenue ceiling or adaptive switch and confirm the full file is revalidated and the contract change is audited.
 - Upload a duplicate order ID.
 - Correct a quarantined value and confirm the record is republished only after all rules pass.
 - Submit a partial or duplicate-producing correction and confirm the row is not added to the trusted dataset.
@@ -295,6 +311,6 @@ Recommended manual acceptance checks:
 
 Krishna Mvwala
 
-Senior Data Analyst | Business Intelligence Developer
+Senior Data Analyst | Data Engineering | Forward-Deployed Analytics
 
 This report describes an independent portfolio project. It does not represent a production system delivered for a named customer or employer.

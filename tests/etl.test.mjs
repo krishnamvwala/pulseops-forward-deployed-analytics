@@ -7,6 +7,7 @@ import {
   extractBatchCorrectionCsv,
   extractCsv,
   previewBatchCorrections,
+  recordsFromSalesRows,
   runEtl,
   validateManualCorrection,
 } from "../app/etl.ts";
@@ -222,4 +223,67 @@ ORD-2,2026-07-22,South,Snacks,,400,Delivered`);
   assert.equal(batch.ok, false);
   if (batch.ok) return;
   assert.match(batch.error, /not in the current quarantine queue/);
+});
+
+test("quarantines revenue above the default configured order ceiling", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,99999999,400,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const result = runEtl(extracted.records);
+  assert.deepEqual(result.rows.map((row) => row.order_id), ["ORD-1"]);
+  assert.equal(result.quarantinedRows, 1);
+  assert.equal(result.revenueGuardrail.maxRevenuePerOrder, 100000);
+  assert.match(result.quarantinedRecords[0].problems[0].message, /exceeds configured maximum of 100,000/);
+});
+
+test("uses the conservative adaptive revenue rule when at least 20 numeric rows exist", () => {
+  const salesRows = Array.from({ length: 20 }, (_, index) => ({
+    order_id: `ORD-${index + 1}`,
+    date: `2026-07-${String(index + 1).padStart(2, "0")}`,
+    region: "West",
+    category: "Beverages",
+    revenue: index === 19 ? 99999 : 1000 + index,
+    cost: 500,
+    status: "Delivered",
+  }));
+
+  const result = runEtl(recordsFromSalesRows(salesRows));
+  assert.equal(result.revenueGuardrail.statisticalSampleSize, 20);
+  assert.ok(result.revenueGuardrail.statisticalLimit !== null);
+  assert.equal(result.rows.length, 19);
+  assert.match(result.quarantinedRecords[0].problems[0].message, /exceeds adaptive limit/);
+});
+
+test("allows a customer-configured revenue ceiling with the adaptive rule disabled", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,99999999,800,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const result = runEtl(extracted.records, {
+    maxRevenuePerOrder: 200000000,
+    statisticalOutliersEnabled: false,
+  });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.quarantinedRows, 0);
+  assert.equal(result.rows[0].revenue, 99999999);
+});
+
+test("publishes an approved revenue exception unchanged and records it in the guardrail result", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,99999999,400,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const initialResult = runEtl(extracted.records);
+  assert.equal(initialResult.rows.length, 1);
+  const approvedResult = runEtl(extracted.records, { approvedRevenueOutlierRows: [3] });
+  assert.equal(approvedResult.rows.length, 2);
+  assert.equal(approvedResult.rows[1].revenue, 99999999);
+  assert.equal(approvedResult.quarantinedRows, 0);
+  assert.equal(approvedResult.revenueGuardrail.approvedExceptions, 1);
 });

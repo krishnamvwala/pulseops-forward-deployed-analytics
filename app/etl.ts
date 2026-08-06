@@ -59,6 +59,33 @@ export type ManualFieldChange = {
   after: string;
 };
 
+export type EtlConfiguration = {
+  maxRevenuePerOrder: number;
+  statisticalOutliersEnabled: boolean;
+  statisticalMinimumRows: number;
+  medianMultiplier: number;
+  iqrMultiplier: number;
+  approvedRevenueOutlierRows: readonly number[];
+};
+
+export const defaultEtlConfiguration: EtlConfiguration = {
+  maxRevenuePerOrder: 100_000,
+  statisticalOutliersEnabled: true,
+  statisticalMinimumRows: 20,
+  medianMultiplier: 10,
+  iqrMultiplier: 3,
+  approvedRevenueOutlierRows: [],
+};
+
+export type RevenueGuardrailResult = {
+  maxRevenuePerOrder: number;
+  statisticalOutliersEnabled: boolean;
+  statisticalSampleSize: number;
+  medianRevenue: number | null;
+  statisticalLimit: number | null;
+  approvedExceptions: number;
+};
+
 export type EtlResult = {
   rows: SalesRow[];
   issues: DataIssue[];
@@ -68,6 +95,7 @@ export type EtlResult = {
   quarantinedRows: number;
   sourceQualityScore: number;
   publishedQualityScore: number;
+  revenueGuardrail: RevenueGuardrailResult;
 };
 
 export type ExtractResult =
@@ -260,6 +288,50 @@ function parseFinancialValue(raw: string) {
   };
 }
 
+function percentile(sortedValues: number[], percentileValue: number) {
+  if (!sortedValues.length) return null;
+  const position = (sortedValues.length - 1) * percentileValue;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sortedValues[lower];
+  return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * (position - lower);
+}
+
+function revenueGuardrailFor(records: RawSalesRecord[], configuration: EtlConfiguration): RevenueGuardrailResult {
+  const revenueValues = records
+    .flatMap((record) => {
+      const parsed = parseFinancialValue(record.values.revenue);
+      return parsed.ok && parsed.value >= 0 ? [parsed.value] : [];
+    })
+    .sort((left, right) => left - right);
+  const medianRevenue = percentile(revenueValues, 0.5);
+  const firstQuartile = percentile(revenueValues, 0.25);
+  const thirdQuartile = percentile(revenueValues, 0.75);
+  const statisticalLimit = configuration.statisticalOutliersEnabled
+    && revenueValues.length >= configuration.statisticalMinimumRows
+    && medianRevenue !== null
+    && firstQuartile !== null
+    && thirdQuartile !== null
+      ? Math.max(
+          medianRevenue * configuration.medianMultiplier,
+          thirdQuartile + configuration.iqrMultiplier * (thirdQuartile - firstQuartile),
+        )
+      : null;
+
+  return {
+    maxRevenuePerOrder: configuration.maxRevenuePerOrder,
+    statisticalOutliersEnabled: configuration.statisticalOutliersEnabled,
+    statisticalSampleSize: revenueValues.length,
+    medianRevenue,
+    statisticalLimit,
+    approvedExceptions: configuration.approvedRevenueOutlierRows.length,
+  };
+}
+
+function displayRevenue(value: number) {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
 function validIsoDate(year: number, month: number, day: number) {
   const date = new Date(Date.UTC(year, month - 1, day));
   if (
@@ -351,7 +423,18 @@ function calculateSourceQuality(issues: DataIssue[], corrections: DataCorrection
   return Math.max(0, 100 - errors * 8 - warnings * 3 - corrections.length * 2 - duplicatesResolved * 5);
 }
 
-export function runEtl(records: RawSalesRecord[]): EtlResult {
+export function runEtl(
+  records: RawSalesRecord[],
+  configuration: Partial<EtlConfiguration> = {},
+): EtlResult {
+  const resolvedConfiguration: EtlConfiguration = {
+    ...defaultEtlConfiguration,
+    ...configuration,
+    approvedRevenueOutlierRows: configuration.approvedRevenueOutlierRows
+      ?? defaultEtlConfiguration.approvedRevenueOutlierRows,
+  };
+  const revenueGuardrail = revenueGuardrailFor(records, resolvedConfiguration);
+  const approvedRevenueOutliers = new Set(resolvedConfiguration.approvedRevenueOutlierRows);
   const rows: SalesRow[] = [];
   const issues: DataIssue[] = [];
   const corrections: DataCorrection[] = [];
@@ -416,6 +499,19 @@ export function runEtl(records: RawSalesRecord[]): EtlResult {
       quarantined.add(row);
     }
 
+    if (revenue.ok && revenue.value >= 0 && !approvedRevenueOutliers.has(row)) {
+      const exceedsConfiguredMaximum = revenue.value > resolvedConfiguration.maxRevenuePerOrder;
+      const exceedsStatisticalLimit = revenueGuardrail.statisticalLimit !== null
+        && revenue.value > revenueGuardrail.statisticalLimit;
+      if (exceedsConfiguredMaximum || exceedsStatisticalLimit) {
+        const reason = exceedsConfiguredMaximum
+          ? `Revenue outlier: ${displayRevenue(revenue.value)} exceeds configured maximum of ${displayRevenue(resolvedConfiguration.maxRevenuePerOrder)}`
+          : `Revenue outlier: ${displayRevenue(revenue.value)} exceeds adaptive limit of ${displayRevenue(revenueGuardrail.statisticalLimit ?? 0)}`;
+        issues.push({ row, field: "revenue", message: reason, severity: "error", action: "quarantined" });
+        quarantined.add(row);
+      }
+    }
+
     const normalizedDate = parseDateValue(record.values.date);
     if (record.values.date.trim() && !normalizedDate) {
       issues.push({ row, field: "date", message: invalidDateMessage(record.values.date), severity: "error", action: "quarantined" });
@@ -477,6 +573,7 @@ export function runEtl(records: RawSalesRecord[]): EtlResult {
     quarantinedRows: quarantined.size,
     sourceQualityScore: calculateSourceQuality(issues, corrections, duplicatesResolved),
     publishedQualityScore: rows.length ? 100 : 0,
+    revenueGuardrail,
   };
 }
 
@@ -485,6 +582,7 @@ export function validateManualCorrection(
   currentResult: EtlResult,
   sourceRow: number,
   values: Record<RequiredColumn, string>,
+  configuration: Partial<EtlConfiguration> = {},
 ): ManualCorrectionResult {
   const sourceRecord = records.find((record) => record.sourceRow === sourceRow);
   if (!sourceRecord) {
@@ -516,7 +614,7 @@ export function validateManualCorrection(
       ? { ...record, values: { ...values } }
       : record
   ));
-  const nextResult = runEtl(updatedRecords);
+  const nextResult = runEtl(updatedRecords, configuration);
   const remainingQuarantine = nextResult.quarantinedRecords.find((record) => record.sourceRow === sourceRow);
 
   if (remainingQuarantine) {
@@ -553,6 +651,7 @@ export function previewBatchCorrections(
   records: RawSalesRecord[],
   currentResult: EtlResult,
   corrections: BatchCorrectionRecord[],
+  configuration: Partial<EtlConfiguration> = {},
 ): BatchCorrectionPreviewResult {
   if (!corrections.length) {
     return { ok: false, error: "The correction file does not contain any records." };
@@ -591,7 +690,7 @@ export function previewBatchCorrections(
     return { ok: false, error: "No verified values changed. Edit at least one quarantined record before uploading the file." };
   }
 
-  const nextResult = runEtl(updatedRecords);
+  const nextResult = runEtl(updatedRecords, configuration);
   const remainingQuarantine = new Set(nextResult.quarantinedRecords.map((record) => record.sourceRow));
   const removedDuplicates = new Set(
     nextResult.issues

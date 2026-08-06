@@ -5,6 +5,7 @@ import type { FormEvent } from "react";
 import {
   createQuarantineCsv,
   createSalesCsv,
+  defaultEtlConfiguration,
   extractBatchCorrectionCsv,
   extractCsv,
   previewBatchCorrections,
@@ -15,6 +16,7 @@ import {
 } from "./etl";
 import type {
   BatchCorrectionPreview,
+  EtlConfiguration,
   EtlResult,
   ManualFieldChange,
   QuarantinedProblem,
@@ -76,6 +78,27 @@ type BatchAuditEntry = {
   trustedRowsAdded: number;
 };
 
+type OutlierApprovalAuditEntry = {
+  id: string;
+  sourceRow: number;
+  orderId: string;
+  revenue: string;
+  reason: string;
+  approvedAt: string;
+  trustedRowsAdded: number;
+  outcome: "published" | "quarantined" | "duplicate";
+};
+
+type GuardrailAuditEntry = {
+  id: string;
+  changedAt: string;
+  beforeMaximum: number;
+  afterMaximum: number;
+  beforeAdaptive: boolean;
+  afterAdaptive: boolean;
+  revalidated: boolean;
+};
+
 type QuarantineFilter = "all" | "missing" | "date" | "financial" | "duplicate" | "other";
 
 const quarantinePageSize = 15;
@@ -115,6 +138,13 @@ function downloadCsv(content: string, filename: string) {
 }
 
 export default function Home() {
+  const [etlConfiguration, setEtlConfiguration] = useState<EtlConfiguration>({
+    ...defaultEtlConfiguration,
+    approvedRevenueOutlierRows: [],
+  });
+  const [revenueMaximumDraft, setRevenueMaximumDraft] = useState(String(defaultEtlConfiguration.maxRevenuePerOrder));
+  const [statisticalDraft, setStatisticalDraft] = useState(defaultEtlConfiguration.statisticalOutliersEnabled);
+  const [guardrailError, setGuardrailError] = useState("");
   const [rawRecords, setRawRecords] = useState<RawSalesRecord[]>(demoRecords);
   const [rows, setRows] = useState<SalesRow[]>(demoResult.rows);
   const [etlResult, setEtlResult] = useState<EtlResult | null>(demoResult);
@@ -135,6 +165,9 @@ export default function Home() {
   const [remediationStatus, setRemediationStatus] = useState("");
   const [remediationAudit, setRemediationAudit] = useState<ManualAuditEntry[]>([]);
   const [batchAudit, setBatchAudit] = useState<BatchAuditEntry[]>([]);
+  const [outlierApprovalAudit, setOutlierApprovalAudit] = useState<OutlierApprovalAuditEntry[]>([]);
+  const [guardrailAudit, setGuardrailAudit] = useState<GuardrailAuditEntry[]>([]);
+  const [approvalReason, setApprovalReason] = useState("");
   const [quarantineSearch, setQuarantineSearch] = useState("");
   const [quarantineFilter, setQuarantineFilter] = useState<QuarantineFilter>("all");
   const [quarantinePage, setQuarantinePage] = useState(0);
@@ -158,6 +191,16 @@ export default function Home() {
   const selectedRawRecord = selectedSourceRow === null
     ? null
     : rawRecords.find((record) => record.sourceRow === selectedSourceRow) ?? null;
+  const selectedRevenueOutlier = selectedQuarantine?.problems.some(
+    (problem) => problem.field === "revenue" && problem.message.startsWith("Revenue outlier:"),
+  ) ?? false;
+  const remediationHasChanges = selectedRawRecord && remediationDraft
+    ? requiredColumns.some((field) => selectedRawRecord.values[field] !== remediationDraft[field])
+    : false;
+  const auditEventCount = remediationAudit.length
+    + batchAudit.length
+    + outlierApprovalAudit.length
+    + guardrailAudit.length;
   const filteredQuarantinedRecords = useMemo(() => {
     const normalizedSearch = quarantineSearch.trim().toLowerCase();
     return quarantinedRecords.filter((record) => {
@@ -261,7 +304,7 @@ export default function Home() {
         return;
       }
 
-      const preview = previewBatchCorrections(rawRecords, etlResult, extracted.records);
+      const preview = previewBatchCorrections(rawRecords, etlResult, extracted.records, etlConfiguration);
       if (!preview.ok) {
         setBatchError(preview.error);
         setBatchPreview(null);
@@ -341,6 +384,17 @@ export default function Home() {
       setRemediationStatus("");
       setRemediationAudit([]);
       setBatchAudit([]);
+      setOutlierApprovalAudit([]);
+      setGuardrailAudit([]);
+      setApprovalReason("");
+      const nextConfiguration = {
+        ...etlConfiguration,
+        approvedRevenueOutlierRows: [],
+      };
+      setEtlConfiguration(nextConfiguration);
+      setRevenueMaximumDraft(String(nextConfiguration.maxRevenuePerOrder));
+      setStatisticalDraft(nextConfiguration.statisticalOutliersEnabled);
+      setGuardrailError("");
       setQuarantineSearch("");
       setQuarantineFilter("all");
       setQuarantinePage(0);
@@ -356,7 +410,7 @@ export default function Home() {
     setPipelineStatus("running");
     setLastRun("Validating and transforming rows…");
     window.setTimeout(() => {
-      const result = runEtl(rawRecords);
+      const result = runEtl(rawRecords, etlConfiguration);
       setRows(result.rows);
       setEtlResult(result);
       setPipelineStatus("complete");
@@ -386,6 +440,7 @@ export default function Home() {
     setRemediationProblems(quarantine.problems);
     setRemediationError("");
     setRemediationStatus("");
+    setApprovalReason("");
     setBatchPreview(null);
     setBatchFilename("");
     setBatchError("");
@@ -396,6 +451,7 @@ export default function Home() {
     setRemediationDraft(null);
     setRemediationProblems([]);
     setRemediationError("");
+    setApprovalReason("");
   }
 
   function updateCorrection(field: RequiredColumn, value: string) {
@@ -411,6 +467,7 @@ export default function Home() {
       etlResult,
       selectedSourceRow,
       remediationDraft,
+      etlConfiguration,
     );
 
     if (!correction.ok) {
@@ -447,6 +504,145 @@ export default function Home() {
       `${publishedOrderId} was revalidated and published. ${trustedLabel} added; dashboard KPIs and SQL answers refreshed.`,
     );
     closeCorrection();
+  }
+
+  function applyRevenueGuardrail() {
+    const parsedMaximum = Number(revenueMaximumDraft.replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(parsedMaximum) || parsedMaximum <= 0) {
+      setGuardrailError("Enter a revenue maximum greater than zero.");
+      return;
+    }
+
+    const changed = parsedMaximum !== etlConfiguration.maxRevenuePerOrder
+      || statisticalDraft !== etlConfiguration.statisticalOutliersEnabled;
+    if (!changed) {
+      setGuardrailError("");
+      return;
+    }
+
+    const changedAt = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const nextConfiguration: EtlConfiguration = {
+      ...etlConfiguration,
+      maxRevenuePerOrder: parsedMaximum,
+      statisticalOutliersEnabled: statisticalDraft,
+    };
+
+    setEtlConfiguration(nextConfiguration);
+    setRevenueMaximumDraft(String(parsedMaximum));
+    setGuardrailError("");
+    setGuardrailAudit((current) => [{
+      id: `guardrail-${Date.now()}`,
+      changedAt,
+      beforeMaximum: etlConfiguration.maxRevenuePerOrder,
+      afterMaximum: parsedMaximum,
+      beforeAdaptive: etlConfiguration.statisticalOutliersEnabled,
+      afterAdaptive: statisticalDraft,
+      revalidated: Boolean(etlResult && pipelineStatus === "complete"),
+    }, ...current]);
+
+    if (etlResult && pipelineStatus === "complete") {
+      const nextResult = runEtl(rawRecords, nextConfiguration);
+      const trustedChange = nextResult.rows.length - etlResult.rows.length;
+      setRows(nextResult.rows);
+      setEtlResult(nextResult);
+      setLastRun(`Revenue contract revalidated • ${changedAt}`);
+      setAnswer(
+        `The revenue guardrail was updated and all ${rawRowCount} source rows were revalidated. The trusted dataset changed by ${trustedChange > 0 ? "+" : ""}${trustedChange} row${Math.abs(trustedChange) === 1 ? "" : "s"}; KPIs and SQL answers now use the new published result.`,
+      );
+      setQueryTrace(null);
+      setRemediationStatus("Revenue contract updated, audited, and applied to the full source file.");
+      setBatchPreview(null);
+      setBatchFilename("");
+      setBatchError("");
+      setQuarantinePage(0);
+      closeCorrection();
+    } else {
+      setRemediationStatus("Revenue contract saved for the next ETL run.");
+    }
+  }
+
+  function approveRevenueOutlier() {
+    if (
+      selectedSourceRow === null
+      || !selectedQuarantine
+      || !selectedRawRecord
+      || !etlResult
+      || !selectedRevenueOutlier
+    ) return;
+
+    const verifiedReason = approvalReason.trim();
+    if (verifiedReason.length < 8) {
+      setRemediationError("Add a specific approval reason (at least 8 characters) before publishing this exception.");
+      return;
+    }
+    if (remediationHasChanges) {
+      setRemediationError("Use Validate & republish for edited values. Exception approval publishes the original revenue unchanged.");
+      return;
+    }
+
+    const nextConfiguration: EtlConfiguration = {
+      ...etlConfiguration,
+      approvedRevenueOutlierRows: Array.from(new Set([
+        ...etlConfiguration.approvedRevenueOutlierRows,
+        selectedSourceRow,
+      ])),
+    };
+    const nextResult = runEtl(rawRecords, nextConfiguration);
+    const stillQuarantined = nextResult.quarantinedRecords.some((record) => record.sourceRow === selectedSourceRow);
+    const removedAsDuplicate = nextResult.issues.some(
+      (issue) => issue.row === selectedSourceRow && issue.action === "removed",
+    );
+    const outcome: OutlierApprovalAuditEntry["outcome"] = removedAsDuplicate
+      ? "duplicate"
+      : stillQuarantined
+        ? "quarantined"
+        : "published";
+    const trustedRowsAdded = nextResult.rows.length - etlResult.rows.length;
+    const approvedAt = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+    setEtlConfiguration(nextConfiguration);
+    setRows(nextResult.rows);
+    setEtlResult(nextResult);
+    setPipelineStatus("complete");
+    setLastRun(`Revenue exception reviewed • ${approvedAt}`);
+    setAnswer(
+      outcome === "published"
+        ? `${selectedQuarantine.orderId} was approved as a legitimate revenue exception and published without changing its original revenue. KPIs and SQL answers were refreshed.`
+        : outcome === "duplicate"
+          ? `${selectedQuarantine.orderId}'s revenue exception was approved, then the identical duplicate was removed by the data contract and remains outside KPIs.`
+          : `${selectedQuarantine.orderId}'s revenue exception was approved, but the row still has another data-contract issue and remains outside KPIs.`,
+    );
+    setQueryTrace(null);
+    setOutlierApprovalAudit((current) => [{
+      id: `outlier-${selectedSourceRow}-${Date.now()}`,
+      sourceRow: selectedSourceRow,
+      orderId: selectedQuarantine.orderId,
+      revenue: selectedRawRecord.values.revenue,
+      reason: verifiedReason,
+      approvedAt,
+      trustedRowsAdded,
+      outcome,
+    }, ...current]);
+    setRemediationStatus(
+      outcome === "published"
+        ? `${selectedQuarantine.orderId} was approved, audited, and added to the trusted dataset unchanged.`
+        : outcome === "duplicate"
+          ? `${selectedQuarantine.orderId}'s exception was approved and audited, then the exact duplicate was excluded from publication.`
+          : `${selectedQuarantine.orderId}'s revenue exception was approved and audited; resolve its remaining issue before publication.`,
+    );
+    setBatchPreview(null);
+    setBatchFilename("");
+    setBatchError("");
+    setQuarantinePage(0);
+
+    if (stillQuarantined) {
+      const remainingRecord = nextResult.quarantinedRecords.find((record) => record.sourceRow === selectedSourceRow);
+      setRemediationProblems(remainingRecord?.problems ?? []);
+      setRemediationError("Revenue exception approved. This record still has another issue to correct.");
+      setApprovalReason("");
+    } else {
+      closeCorrection();
+    }
   }
 
   async function answerQuestion(value = question) {
@@ -603,6 +799,41 @@ export default function Home() {
               </div>
             </div>
             <p className="quality-note">Safe formatting problems are corrected. Ambiguous or risky records are quarantined before KPI calculation.</p>
+            <div className="revenue-guardrail">
+              <div className="revenue-guardrail-heading">
+                <div>
+                  <p className="section-kicker">Revenue outlier guardrail</p>
+                  <strong>Flag extraordinary order values before they distort KPIs</strong>
+                  <span>Outliers are quarantined—not changed—and must be corrected or approved with a reason.</span>
+                </div>
+                <span className="contract-badge">Configurable contract</span>
+              </div>
+              <div className="revenue-guardrail-grid">
+                <label className="revenue-maximum-field">
+                  <span>Maximum revenue per order</span>
+                  <div><b>$</b><input inputMode="decimal" value={revenueMaximumDraft} onChange={(event) => setRevenueMaximumDraft(event.target.value)} /></div>
+                  <small>Default: $100,000. Values above this ceiling enter review.</small>
+                </label>
+                <label className="adaptive-rule-toggle">
+                  <input type="checkbox" checked={statisticalDraft} onChange={(event) => setStatisticalDraft(event.target.checked)} />
+                  <span><strong>Use adaptive statistical check</strong><small>With 20+ numeric rows, revenue must exceed both 10× median and Q3 + 3×IQR to be flagged.</small></span>
+                </label>
+                <div className="guardrail-observation">
+                  <span>Current file</span>
+                  <strong>{etlResult?.revenueGuardrail.medianRevenue === null || etlResult?.revenueGuardrail.medianRevenue === undefined
+                    ? "No median yet"
+                    : `${money.format(etlResult.revenueGuardrail.medianRevenue)} median`}</strong>
+                  <small>{etlResult?.revenueGuardrail.statisticalLimit !== null && etlResult?.revenueGuardrail.statisticalLimit !== undefined
+                    ? `Adaptive limit: ${money.format(etlResult.revenueGuardrail.statisticalLimit)}`
+                    : `${etlResult?.revenueGuardrail.statisticalSampleSize ?? rawRowCount} numeric rows; adaptive check starts at 20`}</small>
+                </div>
+              </div>
+              {guardrailError && <p className="guardrail-error" role="alert">{guardrailError}</p>}
+              <div className="guardrail-actions">
+                <span>Active ceiling: <strong>{money.format(etlConfiguration.maxRevenuePerOrder)}</strong> · Adaptive check {etlConfiguration.statisticalOutliersEnabled ? "on" : "off"}</span>
+                <button type="button" className="queue-primary-button" onClick={applyRevenueGuardrail}>Apply &amp; revalidate</button>
+              </div>
+            </div>
           </section>
 
           <section className="transformation-card">
@@ -621,7 +852,7 @@ export default function Home() {
               </article>
               <article className="transformation-item quarantined">
                 <span className="summary-icon">!</span>
-                <div><strong>{quarantinedCount} rows quarantined for review</strong><small>Missing values, invalid dates, negative values, and conflicting IDs</small></div>
+                <div><strong>{quarantinedCount} rows quarantined for review</strong><small>Missing values, invalid dates, revenue outliers, negative values, and conflicting IDs</small></div>
               </article>
             </div>
             <div className="resolution-workflow" aria-label="Customer correction workflow">
@@ -811,6 +1042,33 @@ export default function Home() {
                       );
                     })}
                   </div>
+                  {selectedRevenueOutlier && (
+                    <div className="outlier-approval">
+                      <div>
+                        <p className="section-kicker">Legitimate exception</p>
+                        <strong>Approve the original revenue without changing it</strong>
+                        <span>Use this only after checking the source system, contract, or record owner. The reason becomes part of the session audit.</span>
+                      </div>
+                      <label>
+                        <span>Verified approval reason</span>
+                        <textarea
+                          value={approvalReason}
+                          onChange={(event) => { setApprovalReason(event.target.value); setRemediationError(""); }}
+                          placeholder="Example: Confirmed enterprise order in CRM ticket #4821"
+                          rows={3}
+                        />
+                      </label>
+                      {remediationHasChanges && <small>To publish edited values, use Validate &amp; republish. Exception approval applies only to the unchanged source value.</small>}
+                      <button
+                        type="button"
+                        className="approve-outlier-button"
+                        onClick={approveRevenueOutlier}
+                        disabled={approvalReason.trim().length < 8 || remediationHasChanges}
+                      >
+                        Approve exception &amp; revalidate
+                      </button>
+                    </div>
+                  )}
                   {remediationError && <p className="remediation-error" role="alert">{remediationError}</p>}
                   <div className="remediation-actions">
                     <button type="button" className="secondary-button" onClick={closeCorrection}>Cancel</button>
@@ -822,14 +1080,40 @@ export default function Home() {
             {remediationStatus && <p className="remediation-status" role="status"><span>✓</span>{remediationStatus}</p>}
             <div className="remediation-audit">
               <div className="remediation-audit-heading">
-                <div><strong>Correction audit</strong><span>Verified individual and batch edits accepted during this session.</span></div>
-                <span>{remediationAudit.length + batchAudit.length} event{remediationAudit.length + batchAudit.length === 1 ? "" : "s"}</span>
+                <div><strong>Decision audit</strong><span>Contract changes, approved exceptions, and verified corrections accepted during this session.</span></div>
+                <span>{auditEventCount} event{auditEventCount === 1 ? "" : "s"}</span>
               </div>
-              {remediationAudit.length || batchAudit.length ? (
+              {auditEventCount ? (
                 <div className="remediation-audit-table-wrap">
                   <table>
                     <thead><tr><th>Time</th><th>Record</th><th>Verified changes</th><th>Result</th></tr></thead>
                     <tbody>
+                      {guardrailAudit.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{entry.changedAt}</td>
+                          <td><strong>Revenue guardrail</strong><small>Data contract</small></td>
+                          <td>
+                            <div className="audit-change-list">
+                              {entry.beforeMaximum !== entry.afterMaximum && <span><b>Order ceiling</b><code>{money.format(entry.beforeMaximum)}</code><i>→</i><code>{money.format(entry.afterMaximum)}</code></span>}
+                              {entry.beforeAdaptive !== entry.afterAdaptive && <span><b>Adaptive check</b><code>{entry.beforeAdaptive ? "On" : "Off"}</code><i>→</i><code>{entry.afterAdaptive ? "On" : "Off"}</code></span>}
+                            </div>
+                          </td>
+                          <td><span className="audit-result contract">Contract {entry.revalidated ? "applied" : "saved"}</span><small>{entry.revalidated ? "Full source revalidated" : "Applies on next ETL run"}</small></td>
+                        </tr>
+                      ))}
+                      {outlierApprovalAudit.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{entry.approvedAt}</td>
+                          <td><strong>{entry.orderId}</strong><small>Source row {entry.sourceRow}</small></td>
+                          <td>
+                            <div className="audit-change-list">
+                              <span><b>Revenue exception</b><code>{entry.revenue}</code><i>✓</i><code>Unchanged</code></span>
+                            </div>
+                            <small className="audit-reason">Reason: {entry.reason}</small>
+                          </td>
+                          <td><span className={`audit-result ${entry.outcome === "published" ? "" : "review"}`}>{entry.outcome === "published" ? `+${entry.trustedRowsAdded} trusted` : "Still excluded"}</span><small>{entry.outcome === "published" ? "Approved & published" : entry.outcome === "duplicate" ? "Exact duplicate removed" : "Another rule remains"}</small></td>
+                        </tr>
+                      ))}
                       {batchAudit.map((entry) => (
                         <tr key={entry.id}>
                           <td>{entry.publishedAt}</td>
@@ -856,7 +1140,7 @@ export default function Home() {
                   </table>
                 </div>
               ) : (
-                <p>No individual or batch corrections have been published in this session.</p>
+                <p>No contract changes, exception approvals, or corrections have been accepted in this session.</p>
               )}
             </div>
             <div className="transformation-footer">
