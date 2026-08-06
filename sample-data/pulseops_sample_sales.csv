@@ -1,0 +1,21 @@
+order_id,date,region,category,revenue,cost,status
+ORD-1001,2026-07-21,South,Beverages,18450,11260,Delivered
+ORD-1002,2026-07-21,Northeast,Snacks,14320,9380,Delivered
+ORD-1003,2026-07-22,Midwest,Household,16780,11840,Late
+ORD-1004,2026-07-22,West,Beverages,21870,13120,Delivered
+ORD-1005,2026-07-23,South,Personal Care,11980,7020,Delivered
+ORD-1006,2026-07-23,Northeast,Household,19240,13750,Delivered
+ORD-1007,2026-07-24,Midwest,Snacks,12470,8140,Delivered
+ORD-1008,2026-07-24,West,Personal Care,17660,10010,Late
+ORD-1009,2026-07-25,South,Household,20540,14280,Delivered
+ORD-1010,2026-07-25,Northeast,Beverages,15690,9570,Delivered
+ORD-1011,2026-07-26,Midwest,Personal Care,13980,7890,Delivered
+ORD-1012,2026-07-26,West,Snacks,23150,14760,Delivered
+ORD-1013,2026-07-27,South,Snacks,17120,10980,Late
+ORD-1014,2026-07-27,Northeast,Personal Care,12630,7220,Delivered
+ORD-1015,2026-07-28,Midwest,Beverages,18890,11540,Delivered
+ORD-1016,2026-07-28,West,Household,24780,16910,Delivered
+ORD-1017,2026-07-29,South,Personal Care,15320,8680,Delivered
+ORD-1018,2026-07-29,Northeast,Snacks,16480,10440,Late
+ORD-1019,2026-07-30,Midwest,Household,19710,13420,Delivered
+ORD-1020,2026-07-30,West,Beverages,22640,13680,Delivered
