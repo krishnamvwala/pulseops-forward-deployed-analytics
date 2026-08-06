@@ -1232,7 +1232,7 @@ export default function Home() {
             </div>
           </section>
 
-          <footer><span>Designed and built by <strong>Krishna Mvwala</strong></span><span>Portfolio scenario • No client data used</span></footer>
+          <footer><span>Designed and built by <strong>Krishna Mvwala</strong></span><span>© 2026 Krishna Mvwala · Portfolio evaluation only · No client data used</span></footer>
         </div>
       </section>
     </main>

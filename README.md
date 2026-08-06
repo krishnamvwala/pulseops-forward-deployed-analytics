@@ -216,6 +216,7 @@ No database, external API, or authentication is required for the current demonst
 ## Project Structure
 
 ```text
+LICENSE              Portfolio-evaluation terms and commercial-use restrictions
 app/
   etl.ts           Extraction, validation, transformation, quarantine, and CSV export
   globals.css       Application design system and responsive layout
@@ -256,6 +257,14 @@ For the complete case study, see [Project Report](docs/PROJECT_REPORT.md).
 - The demo does not include authentication, durable storage, scheduling, or role-based access.
 
 These boundaries are intentional for a safe, portable portfolio demonstration. The project report describes how each area could be extended for production.
+
+## License and Permitted Use
+
+Copyright © 2026 Krishna Mvwala. All rights reserved.
+
+PulseOps is publicly source-available for portfolio review and recruitment evaluation. You may view, clone, and run the project for non-commercial evaluation. You may not sell, commercialize, redistribute, sublicense, remove the ownership notice, or present the project as another person's original work without written permission from Krishna Mvwala.
+
+This is not an open-source license. See the full [PulseOps Portfolio Evaluation License](LICENSE) for the controlling terms. Third-party packages remain subject to their own licenses.
 
 ## Author
 

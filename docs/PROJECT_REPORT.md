@@ -306,6 +306,7 @@ Recommended manual acceptance checks:
 - Application source: React, TypeScript, vinext, and Vite
 - Deployment shape: Cloudflare-compatible output
 - Data storage: Session-only for the current portfolio version
+- Permitted use: Publicly source-available for non-commercial portfolio and recruitment evaluation under the repository's custom license
 
 ## Author
 

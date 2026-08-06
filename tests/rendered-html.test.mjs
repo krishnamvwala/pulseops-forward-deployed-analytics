@@ -29,6 +29,8 @@ test("server-renders the PulseOps ETL workspace", async () => {
   assert.match(html, /Revenue outlier guardrail/);
   assert.match(html, /Decision audit/);
   assert.match(html, /Download cleaned CSV/);
+  assert.match(html, /© 2026 Krishna Mvwala/);
+  assert.match(html, /Portfolio evaluation only/);
   assert.match(html, /Show the top 2 regions by revenue/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|Building your site/i);
 });
