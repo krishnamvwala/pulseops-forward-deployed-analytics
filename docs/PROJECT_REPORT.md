@@ -33,6 +33,8 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Error isolation | Risky rows quarantined with source values and row-level reasons before analytical calculations |
 | Safe correction | Formatting, date, and numeric normalization with a correction log |
 | Human remediation | Source-verified edits, complete revalidation, immediate republishing, and a before/after session audit |
+| Scalable exception review | Fifteen-record pages, internal scrolling, search, issue filters, queue export, and batch re-upload |
+| Governed batch correction | Pre-publication impact preview with passing, unresolved, duplicate, and trusted-row counts |
 | Operational transparency | Four-stage pipeline execution trace |
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
 | Performance investigation | Regional ranking and category economics |
@@ -50,7 +52,10 @@ flowchart TB
         D[Safe transformations]
         I[Quarantine]
         L[Verified correction form]
-        M[Manual correction audit]
+        M[Correction audit]
+        N[Queue CSV export]
+        O[Batch correction upload]
+        P[Validation preview]
         J[Cleaned CSV]
         E[KPI calculations]
         F[Regional and category analysis]
@@ -63,6 +68,8 @@ flowchart TB
     C -->|Risky or ambiguous| I
     I --> L --> C
     L --> M
+    I --> N --> O --> P --> C
+    P --> M
     C -->|Finding| H
     D --> K[In-memory trusted_sales table]
     K --> E
@@ -107,6 +114,14 @@ The interface compares source quality with published quality, reports correction
 A quarantined row can be opened in a customer correction form that displays all seven source fields, highlights the fields that failed validation, and retains the original value beside each input. The customer must verify the intended values outside PulseOps before editing; the application never invents a replacement.
 
 Selecting **Validate & republish** reruns the entire dataset through the same ETL contract. A row remains quarantined when any rule still fails, and a change that collapses into an existing exact duplicate is not described as a new trusted record. An accepted correction updates the in-memory source records, trusted dataset, quality scores, KPI cards, cleaned CSV, and SQL-backed analyst context in one state transition. The session audit records the source row, order ID, time, changed fields, and before/after values.
+
+For high-volume exception review, the queue renders no more than 15 records per page inside a fixed-height scrollable table. Users can search order IDs, source rows, values, and reasons; filter missing, date, financial, duplicate, and other issues; and move between pages without creating thousands of table elements.
+
+The batch workflow exports every quarantined source row with all original fields, issue fields, and reasons. The customer retains `source_row`, updates only values verified against the source system, and uploads the correction file. Before any state changes, PulseOps previews how many rows were submitted, edited, eligible to publish, still quarantined, or removed as duplicates, plus the net change to trusted rows. Confirmation reruns the whole dataset and refreshes every downstream consumer.
+
+### Demonstration Scale Versus Production Scale
+
+PulseOps intentionally processes data in the browser for a public, credential-free portfolio demonstration. Queue paging prevents the interface from rendering every exception simultaneously, but a real 100,000-row workload should use object storage for input files, server-side/background validation, persisted run and issue tables, and database-backed pagination. Repeated problems should be corrected at the source or through an approved bulk rule; record-by-record review is appropriate only for ambiguous exceptions.
 
 ## Business Metrics
 
@@ -156,6 +171,10 @@ Limits are parsed as bounded integers from 1–5, and unrecognized user text nev
 - The interface separates corrected values from quarantined records so users can see what changed and why.
 - A four-step review guide makes the customer remediation process discoverable: review, verify, revalidate, and republish.
 - Quarantined rows expose an editable review form, while failed resubmissions remain isolated with updated validation reasons.
+- Selecting an individual record scrolls directly to the editor and marks the active row, so the action is immediately visible.
+- Queue pagination, internal scrolling, filters, and search keep exception review usable without rendering the full queue.
+- CSV export and re-upload support customer-verified batch remediation instead of requiring hundreds of individual forms.
+- A batch preview makes partial success explicit before publication: passing rows can publish while unresolved rows stay quarantined.
 - Accepted corrections immediately refresh every downstream consumer and appear in a before/after session audit.
 - Impossible dates receive specific explanations, such as an invalid month or a day beyond the length of that month.
 - KPIs show both the headline result and supporting context.
@@ -202,15 +221,18 @@ Produced a Cloudflare-compatible build and a hosted demonstration with a custom 
 5. Review corrections, removed duplicates, quarantined rows, and before/after quality.
 6. Open a quarantined row, explain how the intended value would be verified with the source owner, and enter the confirmed correction.
 7. Select **Validate & republish** and show the trusted-row count, quality score, KPI, and audit updates.
-8. Download the cleaned CSV.
-9. Compare regional revenue and category margins.
-10. Ask the copilot to show the top two regions by revenue.
-11. Open the SQL trace and explain that the query ran only against the published dataset.
-12. Close with production extensions and security requirements.
+8. Search and filter the remaining queue, then explain that the interface renders 15 records per page.
+9. Download the quarantine CSV, edit several source-verified values, and upload it for batch validation.
+10. Review the publish-versus-still-quarantined preview and apply the batch.
+11. Download the cleaned CSV.
+12. Compare regional revenue and category margins.
+13. Ask the copilot to show the top two regions by revenue.
+14. Open the SQL trace and explain that the query ran only against the published dataset.
+15. Close with production extensions and security requirements.
 
 ## Validation
 
-The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, conflicting duplicate IDs, successful manual correction, unresolved correction, and a correction that would become an exact duplicate.
+The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, conflicting duplicate IDs, successful manual correction, unresolved correction, duplicate-producing correction, queue CSV export, partial batch publication, and rejection of batch rows outside the active quarantine queue.
 
 Recommended manual acceptance checks:
 
@@ -220,7 +242,10 @@ Recommended manual acceptance checks:
 - Upload a duplicate order ID.
 - Correct a quarantined value and confirm the record is republished only after all rules pass.
 - Submit a partial or duplicate-producing correction and confirm the row is not added to the trusted dataset.
-- Confirm accepted edits appear in the manual correction audit and immediately affect KPI and analyst results.
+- Confirm accepted edits appear in the correction audit and immediately affect KPI and analyst results.
+- Confirm only 15 quarantine records are rendered per page and the table scrolls independently.
+- Filter and search a queue containing more than 15 exceptions.
+- Export the quarantine CSV, correct a subset, upload it, and compare the preview to the resulting trusted/quarantined counts.
 - Confirm that KPI values change with a different valid dataset.
 - Confirm that copilot answers reflect the current data.
 - Check the interface at desktop and mobile widths.

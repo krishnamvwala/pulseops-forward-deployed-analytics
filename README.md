@@ -31,6 +31,8 @@ Quarantine is a review queue, not a dead end. A customer can open **Review & cor
 
 If any problem remains, the record stays quarantined and the interface explains why. If it passes, PulseOps immediately refreshes the trusted-row count, data-quality comparison, KPIs, downloadable cleaned CSV, and SQL-backed analyst answers. A session audit records the source row, time, and before/after values for every accepted manual correction.
 
+For larger exception queues, PulseOps renders 15 records per page inside a scrollable table, with order/source search and issue-type filters. Customers do not need to open hundreds of records individually: they can download the complete quarantine queue as a correction CSV, update only source-verified values, upload it again, review a publish-versus-still-quarantined preview, and republish all passing rows together.
+
 ## What the Project Does
 
 PulseOps models a common customer engagement: regional teams send daily CSV extracts, but business leaders need one reliable view of revenue, margin, delivery performance, and data quality.
@@ -66,7 +68,11 @@ flowchart LR
 - Exact-duplicate removal and conflicting-ID quarantine
 - Invalid-row quarantine before aggregation
 - Row-level quarantine table with the original value and validation reason
+- Fifteen-record queue pages with a sticky header, internal scrolling, search, and issue filters
 - Customer correction form that highlights the failed fields and preserves original values
+- Automatic scrolling and selected-row feedback when individual review opens
+- Downloadable quarantine correction CSV and governed batch re-upload
+- Batch impact preview showing submitted, publishable, unresolved, duplicate, and trusted-row changes
 - Full-contract revalidation before a corrected record can be republished
 - Immediate KPI, cleaned-CSV, and analyst-query refresh after accepted corrections
 - Session audit trail with source row and before/after values
@@ -107,6 +113,12 @@ The validation layer checks:
 
 Safe formatting differences are corrected and logged. Exact duplicate records are removed once. Rows with missing values, invalid dates or numbers, negative financial values, cost above revenue, or conflicting duplicate IDs are quarantined rather than guessed. Only published rows are used for dashboard calculations.
 
+## Scale and Production Boundary
+
+The portfolio application keeps data in the browser so anyone can test it without accounts or infrastructure. Its queue is designed to remain usable when a file contains many exceptions because it renders only 15 records at a time and supports batch correction. However, a real production workload of 100,000 or more records should move parsing, validation, persistence, and background execution to server-side services and a database or warehouse. The browser should receive paginated results rather than holding the full operational dataset.
+
+At production scale, teams should correct recurring problems in the source system or apply an approved deterministic rule. Individual review is reserved for unusual exceptions whose intended value requires business confirmation.
+
 ## KPI Definitions
 
 | KPI | Calculation |
@@ -139,11 +151,14 @@ Natural-language wording selects only from allowlisted query templates; typed te
 4. Confirm that the raw file is extracted but still waiting for ETL.
 5. Select **Run ETL pipeline**.
 6. Review safe corrections, removed duplicates, and the row-level quarantine reasons.
-7. For a quarantined row, select **Review & correct**, enter only a source-verified value, then select **Validate & republish**.
-8. Confirm the trusted-row count, KPIs, cleaned CSV, and manual correction audit update after the record passes.
-9. Download the cleaned CSV and inspect the executive KPIs.
-10. Ask Pulse: `Show the top 2 regions by revenue`.
-11. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
+7. Search or filter the queue and confirm that only 15 records are rendered per page.
+8. For a single unusual exception, select **Review & correct**, enter only a source-verified value, then select **Validate & republish**.
+9. For a larger correction set, select **Download queue CSV**, edit verified values without changing `source_row`, and upload the file with **Upload corrected CSV**.
+10. Review the batch preview, apply it, and confirm passing rows publish while unresolved rows remain quarantined.
+11. Confirm the trusted-row count, KPIs, cleaned CSV, and correction audit update.
+12. Download the cleaned CSV and inspect the executive KPIs.
+13. Ask Pulse: `Show the top 2 regions by revenue`.
+14. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
 
 ## Run Locally
 

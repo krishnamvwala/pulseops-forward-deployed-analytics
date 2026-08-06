@@ -88,6 +88,38 @@ export type ManualCorrectionResult =
       problems: QuarantinedProblem[];
     };
 
+export type BatchCorrectionRecord = {
+  sourceRow: number;
+  values: Record<RequiredColumn, string>;
+};
+
+export type BatchCorrectionOutcome = {
+  sourceRow: number;
+  orderId: string;
+  changes: ManualFieldChange[];
+  outcome: "published" | "quarantined" | "duplicate";
+};
+
+export type BatchCorrectionPreview = {
+  records: RawSalesRecord[];
+  result: EtlResult;
+  outcomes: BatchCorrectionOutcome[];
+  submittedRows: number;
+  changedRows: number;
+  publishableRows: number;
+  remainingRows: number;
+  duplicateRows: number;
+  trustedRowsAdded: number;
+};
+
+export type BatchCorrectionExtractResult =
+  | { ok: true; records: BatchCorrectionRecord[] }
+  | { ok: false; error: string };
+
+export type BatchCorrectionPreviewResult =
+  | { ok: true; preview: BatchCorrectionPreview }
+  | { ok: false; error: string };
+
 function parseCsvLine(line: string) {
   const values: string[] = [];
   let current = "";
@@ -138,6 +170,43 @@ export function extractCsv(content: string): ExtractResult {
   });
 
   return { ok: true, records, rowCount: records.length };
+}
+
+export function extractBatchCorrectionCsv(content: string): BatchCorrectionExtractResult {
+  const lines = content.replace(/\r/g, "").split("\n").filter((line) => line.trim());
+  if (lines.length < 2) {
+    return { ok: false, error: "The correction file needs a header and at least one record." };
+  }
+
+  const headers = parseCsvLine(lines[0]).map(normalizeHeader);
+  const requiredBatchColumns = ["source_row", ...requiredColumns];
+  const missingColumns = requiredBatchColumns.filter((column) => !headers.includes(column));
+  if (missingColumns.length) {
+    return { ok: false, error: `Missing correction columns: ${missingColumns.join(", ")}` };
+  }
+
+  const seenSourceRows = new Set<number>();
+  const records: BatchCorrectionRecord[] = [];
+  for (let index = 1; index < lines.length; index += 1) {
+    const parsedValues = parseCsvLine(lines[index]);
+    const sourceRowText = parsedValues[headers.indexOf("source_row")]?.trim() ?? "";
+    if (!/^\d+$/.test(sourceRowText) || Number(sourceRowText) < 2) {
+      return { ok: false, error: `Correction CSV row ${index + 1} has an invalid source_row.` };
+    }
+
+    const sourceRow = Number(sourceRowText);
+    if (seenSourceRows.has(sourceRow)) {
+      return { ok: false, error: `Source row ${sourceRow} appears more than once in the correction file.` };
+    }
+    seenSourceRows.add(sourceRow);
+
+    const values = Object.fromEntries(
+      requiredColumns.map((column) => [column, parsedValues[headers.indexOf(column)] ?? ""]),
+    ) as Record<RequiredColumn, string>;
+    records.push({ sourceRow, values });
+  }
+
+  return { ok: true, records };
 }
 
 function titleCase(value: string) {
@@ -480,6 +549,82 @@ export function validateManualCorrection(
   };
 }
 
+export function previewBatchCorrections(
+  records: RawSalesRecord[],
+  currentResult: EtlResult,
+  corrections: BatchCorrectionRecord[],
+): BatchCorrectionPreviewResult {
+  if (!corrections.length) {
+    return { ok: false, error: "The correction file does not contain any records." };
+  }
+
+  const currentQuarantine = new Set(currentResult.quarantinedRecords.map((record) => record.sourceRow));
+  const unknownRows = corrections
+    .map((record) => record.sourceRow)
+    .filter((sourceRow) => !currentQuarantine.has(sourceRow));
+  if (unknownRows.length) {
+    return {
+      ok: false,
+      error: `These source rows are not in the current quarantine queue: ${unknownRows.slice(0, 5).join(", ")}${unknownRows.length > 5 ? "…" : ""}`,
+    };
+  }
+
+  const correctionBySourceRow = new Map(corrections.map((record) => [record.sourceRow, record]));
+  const changesBySourceRow = new Map<number, ManualFieldChange[]>();
+  const updatedRecords = records.map((record) => {
+    const correction = correctionBySourceRow.get(record.sourceRow);
+    if (!correction) return record;
+
+    const changes = requiredColumns
+      .filter((field) => record.values[field] !== correction.values[field])
+      .map((field) => ({
+        field,
+        before: record.values[field],
+        after: correction.values[field],
+      }));
+    changesBySourceRow.set(record.sourceRow, changes);
+    return changes.length ? { ...record, values: { ...correction.values } } : record;
+  });
+
+  const changedRows = [...changesBySourceRow.values()].filter((changes) => changes.length).length;
+  if (!changedRows) {
+    return { ok: false, error: "No verified values changed. Edit at least one quarantined record before uploading the file." };
+  }
+
+  const nextResult = runEtl(updatedRecords);
+  const remainingQuarantine = new Set(nextResult.quarantinedRecords.map((record) => record.sourceRow));
+  const removedDuplicates = new Set(
+    nextResult.issues
+      .filter((issue) => issue.action === "removed")
+      .map((issue) => issue.row),
+  );
+  const outcomes: BatchCorrectionOutcome[] = corrections.map((correction) => ({
+    sourceRow: correction.sourceRow,
+    orderId: correction.values.order_id.trim() || "Missing order ID",
+    changes: changesBySourceRow.get(correction.sourceRow) ?? [],
+    outcome: remainingQuarantine.has(correction.sourceRow)
+      ? "quarantined"
+      : removedDuplicates.has(correction.sourceRow)
+        ? "duplicate"
+        : "published",
+  }));
+
+  return {
+    ok: true,
+    preview: {
+      records: updatedRecords,
+      result: nextResult,
+      outcomes,
+      submittedRows: corrections.length,
+      changedRows,
+      publishableRows: outcomes.filter((record) => record.outcome === "published").length,
+      remainingRows: outcomes.filter((record) => record.outcome === "quarantined").length,
+      duplicateRows: outcomes.filter((record) => record.outcome === "duplicate").length,
+      trustedRowsAdded: nextResult.rows.length - currentResult.rows.length,
+    },
+  };
+}
+
 export function recordsFromSalesRows(rows: SalesRow[]): RawSalesRecord[] {
   return rows.map((row, index) => ({
     sourceRow: index + 2,
@@ -503,4 +648,22 @@ function csvValue(value: string | number) {
 export function createSalesCsv(rows: SalesRow[]) {
   const lines = rows.map((row) => requiredColumns.map((column) => csvValue(row[column])).join(","));
   return [requiredColumns.join(","), ...lines].join("\n");
+}
+
+export function createQuarantineCsv(records: RawSalesRecord[], quarantinedRecords: QuarantinedRecord[]) {
+  const recordBySourceRow = new Map(records.map((record) => [record.sourceRow, record]));
+  const headers = ["source_row", ...requiredColumns, "issue_fields", "issue_reasons"];
+  const lines = quarantinedRecords.flatMap((quarantinedRecord) => {
+    const sourceRecord = recordBySourceRow.get(quarantinedRecord.sourceRow);
+    if (!sourceRecord) return [];
+
+    return [[
+      quarantinedRecord.sourceRow,
+      ...requiredColumns.map((column) => sourceRecord.values[column]),
+      quarantinedRecord.problems.map((problem) => problem.field).join(" | "),
+      quarantinedRecord.problems.map((problem) => problem.message).join(" | "),
+    ].map(csvValue).join(",")];
+  });
+
+  return [headers.join(","), ...lines].join("\n");
 }

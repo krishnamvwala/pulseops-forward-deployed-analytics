@@ -1,16 +1,20 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
+  createQuarantineCsv,
   createSalesCsv,
+  extractBatchCorrectionCsv,
   extractCsv,
+  previewBatchCorrections,
   recordsFromSalesRows,
   requiredColumns,
   runEtl,
   validateManualCorrection,
 } from "./etl";
 import type {
+  BatchCorrectionPreview,
   EtlResult,
   ManualFieldChange,
   QuarantinedProblem,
@@ -61,6 +65,21 @@ type ManualAuditEntry = {
   trustedRowsAdded: number;
 };
 
+type BatchAuditEntry = {
+  id: string;
+  filename: string;
+  publishedAt: string;
+  submittedRows: number;
+  changedRows: number;
+  publishableRows: number;
+  remainingRows: number;
+  trustedRowsAdded: number;
+};
+
+type QuarantineFilter = "all" | "missing" | "date" | "financial" | "duplicate" | "other";
+
+const quarantinePageSize = 15;
+
 const fieldLabels: Record<RequiredColumn, string> = {
   order_id: "Order ID",
   date: "Date",
@@ -74,6 +93,15 @@ const fieldLabels: Record<RequiredColumn, string> = {
 function problemAppliesToField(problem: QuarantinedProblem, field: RequiredColumn) {
   return problem.field === field
     || (problem.field === "revenue / cost" && (field === "revenue" || field === "cost"));
+}
+
+function problemCategory(problem: QuarantinedProblem): Exclude<QuarantineFilter, "all"> {
+  const text = `${problem.field} ${problem.message}`.toLowerCase();
+  if (text.includes("missing")) return "missing";
+  if (text.includes("date") || problem.field === "date") return "date";
+  if (text.includes("revenue") || text.includes("cost") || text.includes("financial") || text.includes("numeric")) return "financial";
+  if (text.includes("duplicate") || problem.field === "order_id") return "duplicate";
+  return "other";
 }
 
 function downloadCsv(content: string, filename: string) {
@@ -106,11 +134,20 @@ export default function Home() {
   const [remediationProblems, setRemediationProblems] = useState<QuarantinedProblem[]>([]);
   const [remediationStatus, setRemediationStatus] = useState("");
   const [remediationAudit, setRemediationAudit] = useState<ManualAuditEntry[]>([]);
+  const [batchAudit, setBatchAudit] = useState<BatchAuditEntry[]>([]);
+  const [quarantineSearch, setQuarantineSearch] = useState("");
+  const [quarantineFilter, setQuarantineFilter] = useState<QuarantineFilter>("all");
+  const [quarantinePage, setQuarantinePage] = useState(0);
+  const [batchPreview, setBatchPreview] = useState<BatchCorrectionPreview | null>(null);
+  const [batchFilename, setBatchFilename] = useState("");
+  const [batchError, setBatchError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const batchFileRef = useRef<HTMLInputElement>(null);
+  const remediationEditorRef = useRef<HTMLFormElement>(null);
 
   const issues = etlResult?.issues ?? [];
   const corrections = etlResult?.corrections ?? [];
-  const quarantinedRecords = etlResult?.quarantinedRecords ?? [];
+  const quarantinedRecords = useMemo(() => etlResult?.quarantinedRecords ?? [], [etlResult]);
   const trustedCount = etlResult?.rows.length ?? 0;
   const quarantinedCount = etlResult?.quarantinedRows ?? 0;
   const sourceQuality = etlResult?.sourceQualityScore ?? 0;
@@ -121,6 +158,34 @@ export default function Home() {
   const selectedRawRecord = selectedSourceRow === null
     ? null
     : rawRecords.find((record) => record.sourceRow === selectedSourceRow) ?? null;
+  const filteredQuarantinedRecords = useMemo(() => {
+    const normalizedSearch = quarantineSearch.trim().toLowerCase();
+    return quarantinedRecords.filter((record) => {
+      const matchesFilter = quarantineFilter === "all"
+        || record.problems.some((problem) => problemCategory(problem) === quarantineFilter);
+      const searchableText = [
+        record.orderId,
+        String(record.sourceRow),
+        ...record.problems.flatMap((problem) => [problem.field, problem.value, problem.message]),
+      ].join(" ").toLowerCase();
+      return matchesFilter && (!normalizedSearch || searchableText.includes(normalizedSearch));
+    });
+  }, [quarantineFilter, quarantineSearch, quarantinedRecords]);
+  const quarantinePageCount = Math.max(1, Math.ceil(filteredQuarantinedRecords.length / quarantinePageSize));
+  const activeQuarantinePage = Math.min(quarantinePage, quarantinePageCount - 1);
+  const quarantinePageStart = activeQuarantinePage * quarantinePageSize;
+  const visibleQuarantinedRecords = filteredQuarantinedRecords.slice(
+    quarantinePageStart,
+    quarantinePageStart + quarantinePageSize,
+  );
+
+  useEffect(() => {
+    if (selectedSourceRow === null) return;
+    window.requestAnimationFrame(() => {
+      remediationEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      remediationEditorRef.current?.focus({ preventScroll: true });
+    });
+  }, [selectedSourceRow]);
 
   const analytics = useMemo(() => {
     const revenue = rows.reduce((total, row) => total + row.revenue, 0);
@@ -175,6 +240,81 @@ export default function Home() {
     downloadCsv(createSalesCsv(rows), `${baseName}_cleaned.csv`);
   }
 
+  function downloadQuarantine() {
+    if (!quarantinedRecords.length) return;
+    const baseName = sourceName.replace(/\.csv$/i, "");
+    downloadCsv(
+      createQuarantineCsv(rawRecords, quarantinedRecords),
+      `${baseName}_quarantine_corrections.csv`,
+    );
+  }
+
+  function parseBatchUpload(file: File) {
+    if (!etlResult) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const extracted = extractBatchCorrectionCsv(String(reader.result ?? ""));
+      if (!extracted.ok) {
+        setBatchError(extracted.error);
+        setBatchPreview(null);
+        setBatchFilename(file.name);
+        return;
+      }
+
+      const preview = previewBatchCorrections(rawRecords, etlResult, extracted.records);
+      if (!preview.ok) {
+        setBatchError(preview.error);
+        setBatchPreview(null);
+        setBatchFilename(file.name);
+        return;
+      }
+
+      setBatchPreview(preview.preview);
+      setBatchFilename(file.name);
+      setBatchError("");
+      setRemediationStatus("");
+      closeCorrection();
+    };
+    reader.onloadend = () => {
+      if (batchFileRef.current) batchFileRef.current.value = "";
+    };
+    reader.readAsText(file);
+  }
+
+  function applyBatchCorrections() {
+    if (!batchPreview) return;
+    const publishedAt = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const trustedLabel = `${batchPreview.trustedRowsAdded} trusted row${batchPreview.trustedRowsAdded === 1 ? "" : "s"}`;
+
+    setRawRecords(batchPreview.records);
+    setRows(batchPreview.result.rows);
+    setEtlResult(batchPreview.result);
+    setPipelineStatus("complete");
+    setLastRun(`Batch republished • ${publishedAt}`);
+    setAnswer(
+      `The corrected batch added ${trustedLabel}. ${batchPreview.remainingRows} submitted row${batchPreview.remainingRows === 1 ? " still needs" : "s still need"} review. KPIs and SQL answers now use the republished trusted dataset.`,
+    );
+    setQueryTrace(null);
+    setBatchAudit((current) => [{
+      id: `batch-${Date.now()}`,
+      filename: batchFilename,
+      publishedAt,
+      submittedRows: batchPreview.submittedRows,
+      changedRows: batchPreview.changedRows,
+      publishableRows: batchPreview.publishableRows,
+      remainingRows: batchPreview.remainingRows,
+      trustedRowsAdded: batchPreview.trustedRowsAdded,
+    }, ...current]);
+    setRemediationStatus(
+      `Batch revalidation completed: ${batchPreview.publishableRows} submitted record${batchPreview.publishableRows === 1 ? "" : "s"} published, ${batchPreview.remainingRows} remain quarantined, and ${trustedLabel} added overall.`,
+    );
+    closeCorrection();
+    setBatchPreview(null);
+    setBatchFilename("");
+    setBatchError("");
+    setQuarantinePage(0);
+  }
+
   function parseUpload(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -200,6 +340,13 @@ export default function Home() {
       setRemediationProblems([]);
       setRemediationStatus("");
       setRemediationAudit([]);
+      setBatchAudit([]);
+      setQuarantineSearch("");
+      setQuarantineFilter("all");
+      setQuarantinePage(0);
+      setBatchPreview(null);
+      setBatchFilename("");
+      setBatchError("");
     };
     reader.readAsText(file);
   }
@@ -222,6 +369,10 @@ export default function Home() {
       setRemediationDraft(null);
       setRemediationError("");
       setRemediationProblems([]);
+      setBatchPreview(null);
+      setBatchFilename("");
+      setBatchError("");
+      setQuarantinePage(0);
     }, 650);
   }
 
@@ -235,6 +386,9 @@ export default function Home() {
     setRemediationProblems(quarantine.problems);
     setRemediationError("");
     setRemediationStatus("");
+    setBatchPreview(null);
+    setBatchFilename("");
+    setBatchError("");
   }
 
   function closeCorrection() {
@@ -278,6 +432,9 @@ export default function Home() {
       `${publishedOrderId} passed the full data contract and added ${trustedLabel}. KPIs and analyst queries now use the republished trusted dataset.`,
     );
     setQueryTrace(null);
+    setBatchPreview(null);
+    setBatchFilename("");
+    setBatchError("");
     setRemediationAudit((current) => [{
       id: `${selectedSourceRow}-${Date.now()}`,
       sourceRow: selectedSourceRow,
@@ -493,48 +650,135 @@ export default function Home() {
               {!etlResult ? (
                 <p className="quarantine-empty pending">Run the ETL pipeline to identify records that need review.</p>
               ) : quarantinedRecords.length ? (
-                <div className="quarantine-table-wrap">
-                  <table className="quarantine-table" aria-label="Quarantined records and validation reasons">
-                    <thead>
-                      <tr><th>Order ID</th><th>Source row</th><th>Invalid field and value</th><th>Reason</th><th>Action</th></tr>
-                    </thead>
-                    <tbody>
-                      {quarantinedRecords.map((record) => (
-                        <tr key={record.sourceRow}>
-                          <td><strong>{record.orderId}</strong></td>
-                          <td>{record.sourceRow}</td>
-                          <td>
-                            <div className="problem-list">
-                              {record.problems.map((problem, index) => (
-                                <span key={`${problem.field}-${index}`}><b>{problem.field}</b><code>{problem.value}</code></span>
-                              ))}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="reason-list">
-                              {record.problems.map((problem, index) => <span key={`${problem.message}-${index}`}>{problem.message}</span>)}
-                            </div>
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="review-record-button"
-                              onClick={() => openCorrection(record.sourceRow)}
-                              aria-label={`Review and correct ${record.orderId} from source row ${record.sourceRow}`}
-                            >
-                              Review &amp; correct
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <>
+                  <div className="quarantine-controls">
+                    <label className="quarantine-search">
+                      <span>Search queue</span>
+                      <input
+                        type="search"
+                        value={quarantineSearch}
+                        placeholder="Order ID, source row, value, or reason"
+                        onChange={(event) => {
+                          setQuarantineSearch(event.target.value);
+                          setQuarantinePage(0);
+                        }}
+                      />
+                    </label>
+                    <label className="quarantine-filter">
+                      <span>Issue type</span>
+                      <select
+                        value={quarantineFilter}
+                        onChange={(event) => {
+                          setQuarantineFilter(event.target.value as QuarantineFilter);
+                          setQuarantinePage(0);
+                        }}
+                      >
+                        <option value="all">All issues</option>
+                        <option value="missing">Missing values</option>
+                        <option value="date">Invalid dates</option>
+                        <option value="financial">Financial values</option>
+                        <option value="duplicate">Duplicate IDs</option>
+                        <option value="other">Other rules</option>
+                      </select>
+                    </label>
+                    <div className="quarantine-actions">
+                      <button type="button" className="queue-secondary-button" onClick={downloadQuarantine}>Download queue CSV</button>
+                      <button type="button" className="queue-primary-button" onClick={() => batchFileRef.current?.click()}>Upload corrected CSV</button>
+                      <input
+                        ref={batchFileRef}
+                        className="visually-hidden"
+                        type="file"
+                        accept=".csv,text/csv"
+                        onChange={(event) => event.target.files?.[0] && parseBatchUpload(event.target.files[0])}
+                        aria-label="Upload corrected quarantine CSV"
+                      />
+                    </div>
+                  </div>
+                  <div className="quarantine-guidance">
+                    <span><b>Individual:</b> review unusual exceptions one at a time.</span>
+                    <span><b>Batch:</b> download the queue, keep <code>source_row</code> unchanged, edit verified values, and upload it for a preview.</span>
+                  </div>
+                  {batchError && <p className="batch-error" role="alert"><strong>{batchFilename || "Correction file"}</strong><span>{batchError}</span></p>}
+                  {batchPreview && (
+                    <div className="batch-preview" aria-live="polite">
+                      <div className="batch-preview-heading">
+                        <div><p className="section-kicker">Batch validation preview</p><strong>{batchFilename}</strong><span>Nothing is republished until you confirm this preview.</span></div>
+                        <button type="button" className="editor-close" onClick={() => { setBatchPreview(null); setBatchFilename(""); }}>×</button>
+                      </div>
+                      <div className="batch-preview-grid">
+                        <div><span>Submitted</span><strong>{batchPreview.submittedRows}</strong><small>{batchPreview.changedRows} rows edited</small></div>
+                        <div className="preview-publish"><span>Will publish</span><strong>{batchPreview.publishableRows}</strong><small>Pass every rule</small></div>
+                        <div className="preview-review"><span>Still review</span><strong>{batchPreview.remainingRows}</strong><small>Remain quarantined</small></div>
+                        <div><span>Trusted change</span><strong>{batchPreview.trustedRowsAdded > 0 ? "+" : ""}{batchPreview.trustedRowsAdded}</strong><small>{batchPreview.duplicateRows} duplicate removals</small></div>
+                      </div>
+                      <div className="batch-preview-actions">
+                        <button type="button" className="secondary-button" onClick={() => { setBatchPreview(null); setBatchFilename(""); }}>Cancel</button>
+                        <button type="button" className="publish-correction-button" onClick={applyBatchCorrections}>Apply batch &amp; republish</button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="queue-results-meta">
+                    <span>
+                      {filteredQuarantinedRecords.length
+                        ? `Showing ${quarantinePageStart + 1}–${Math.min(quarantinePageStart + quarantinePageSize, filteredQuarantinedRecords.length)} of ${filteredQuarantinedRecords.length}`
+                        : "No matching records"}
+                    </span>
+                    {filteredQuarantinedRecords.length !== quarantinedRecords.length && <small>{quarantinedRecords.length} total quarantined</small>}
+                  </div>
+                  {filteredQuarantinedRecords.length ? (
+                    <>
+                      <div className="quarantine-table-wrap">
+                        <table className="quarantine-table" aria-label="Quarantined records and validation reasons">
+                          <thead>
+                            <tr><th>Order ID</th><th>Source row</th><th>Invalid field and value</th><th>Reason</th><th>Action</th></tr>
+                          </thead>
+                          <tbody>
+                            {visibleQuarantinedRecords.map((record) => (
+                              <tr key={record.sourceRow} className={record.sourceRow === selectedSourceRow ? "selected-record" : ""}>
+                                <td><strong>{record.orderId}</strong></td>
+                                <td>{record.sourceRow}</td>
+                                <td>
+                                  <div className="problem-list">
+                                    {record.problems.map((problem, index) => (
+                                      <span key={`${problem.field}-${index}`}><b>{problem.field}</b><code>{problem.value}</code></span>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td>
+                                  <div className="reason-list">
+                                    {record.problems.map((problem, index) => <span key={`${problem.message}-${index}`}>{problem.message}</span>)}
+                                  </div>
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="review-record-button"
+                                    onClick={() => openCorrection(record.sourceRow)}
+                                    aria-label={`Review and correct ${record.orderId} from source row ${record.sourceRow}`}
+                                  >
+                                    {record.sourceRow === selectedSourceRow ? "Editing below ↓" : "Review & correct"}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="queue-pagination" aria-label="Quarantine queue pagination">
+                        <button type="button" onClick={() => setQuarantinePage(Math.max(0, activeQuarantinePage - 1))} disabled={activeQuarantinePage === 0}>Previous</button>
+                        <span>Page {activeQuarantinePage + 1} of {quarantinePageCount}</span>
+                        <button type="button" onClick={() => setQuarantinePage(Math.min(quarantinePageCount - 1, activeQuarantinePage + 1))} disabled={activeQuarantinePage >= quarantinePageCount - 1}>Next</button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="quarantine-empty pending">No quarantined records match the current search and filter.</p>
+                  )}
+                </>
               ) : (
                 <p className="quarantine-empty clear"><span>✓</span>No records were quarantined in this pipeline run.</p>
               )}
               {selectedQuarantine && selectedRawRecord && remediationDraft && (
-                <form className="remediation-editor" onSubmit={submitCorrection}>
+                <form ref={remediationEditorRef} className="remediation-editor" onSubmit={submitCorrection} tabIndex={-1}>
                   <div className="remediation-editor-heading">
                     <div>
                       <p className="section-kicker">Verified correction</p>
@@ -578,14 +822,22 @@ export default function Home() {
             {remediationStatus && <p className="remediation-status" role="status"><span>✓</span>{remediationStatus}</p>}
             <div className="remediation-audit">
               <div className="remediation-audit-heading">
-                <div><strong>Manual correction audit</strong><span>Verified edits accepted during this session.</span></div>
-                <span>{remediationAudit.length} published</span>
+                <div><strong>Correction audit</strong><span>Verified individual and batch edits accepted during this session.</span></div>
+                <span>{remediationAudit.length + batchAudit.length} event{remediationAudit.length + batchAudit.length === 1 ? "" : "s"}</span>
               </div>
-              {remediationAudit.length ? (
+              {remediationAudit.length || batchAudit.length ? (
                 <div className="remediation-audit-table-wrap">
                   <table>
                     <thead><tr><th>Time</th><th>Record</th><th>Verified changes</th><th>Result</th></tr></thead>
                     <tbody>
+                      {batchAudit.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{entry.publishedAt}</td>
+                          <td><strong>{entry.filename}</strong><small>Batch correction file</small></td>
+                          <td><div className="audit-change-list"><span><b>{entry.changedRows} rows edited</b><code>{entry.submittedRows} submitted</code></span></div></td>
+                          <td><span className="audit-result">+{entry.trustedRowsAdded} trusted</span><small>{entry.publishableRows} published · {entry.remainingRows} remain</small></td>
+                        </tr>
+                      ))}
                       {remediationAudit.map((entry) => (
                         <tr key={entry.id}>
                           <td>{entry.publishedAt}</td>
@@ -604,7 +856,7 @@ export default function Home() {
                   </table>
                 </div>
               ) : (
-                <p>No manual corrections have been published in this session.</p>
+                <p>No individual or batch corrections have been published in this session.</p>
               )}
             </div>
             <div className="transformation-footer">

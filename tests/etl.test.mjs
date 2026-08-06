@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSalesCsv, extractCsv, runEtl, validateManualCorrection } from "../app/etl.ts";
+import {
+  createQuarantineCsv,
+  createSalesCsv,
+  extractBatchCorrectionCsv,
+  extractCsv,
+  previewBatchCorrections,
+  runEtl,
+  validateManualCorrection,
+} from "../app/etl.ts";
 
 const messyCsv = `order_id,date,region,category,revenue,cost,status
  ord-1 ,7/21/2026, west , beverages ,"$1,200",800, delivered
@@ -152,4 +160,66 @@ ORD-2,2026-07-22,South,Snacks,-50,20,Delivered`);
   assert.equal(correction.ok, false);
   if (correction.ok) return;
   assert.match(correction.message, /removed as a duplicate/);
+});
+
+test("exports the quarantine queue as an editable correction CSV", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,,400,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const result = runEtl(extracted.records);
+  const queueCsv = createQuarantineCsv(extracted.records, result.quarantinedRecords);
+  assert.match(queueCsv, /^source_row,order_id,date,region,category,revenue,cost,status,issue_fields,issue_reasons/m);
+  assert.match(queueCsv, /3,ORD-2,2026-07-22,South,Snacks,,400,Delivered,revenue,Required value is missing/);
+  assert.doesNotMatch(queueCsv, /ORD-1/);
+});
+
+test("previews a partial batch correction before republishing trusted rows", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,,400,Delivered
+ORD-3,2026-13-01,West,Sports,700,400,Shipped`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const currentResult = runEtl(extracted.records);
+  const corrected = extractBatchCorrectionCsv(`source_row,order_id,date,region,category,revenue,cost,status,issue_fields,issue_reasons
+3,ORD-2,2026-07-22,South,Snacks,700,400,Delivered,revenue,Required value is missing
+4,ORD-3,2026-13-01,East,Sports,700,400,Shipped,date,Invalid date`);
+  assert.equal(corrected.ok, true);
+  if (!corrected.ok) return;
+
+  const batch = previewBatchCorrections(extracted.records, currentResult, corrected.records);
+  assert.equal(batch.ok, true);
+  if (!batch.ok) return;
+  assert.equal(batch.preview.submittedRows, 2);
+  assert.equal(batch.preview.changedRows, 2);
+  assert.equal(batch.preview.publishableRows, 1);
+  assert.equal(batch.preview.remainingRows, 1);
+  assert.equal(batch.preview.trustedRowsAdded, 1);
+  assert.deepEqual(
+    batch.preview.outcomes.map((record) => [record.sourceRow, record.outcome]),
+    [[3, "published"], [4, "quarantined"]],
+  );
+});
+
+test("rejects batch files that target rows outside the current quarantine queue", () => {
+  const extracted = extractCsv(`order_id,date,region,category,revenue,cost,status
+ORD-1,2026-07-21,West,Beverages,1200,800,Delivered
+ORD-2,2026-07-22,South,Snacks,,400,Delivered`);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const currentResult = runEtl(extracted.records);
+  const corrected = extractBatchCorrectionCsv(`source_row,order_id,date,region,category,revenue,cost,status
+2,ORD-1,2026-07-21,East,Beverages,1200,800,Delivered`);
+  assert.equal(corrected.ok, true);
+  if (!corrected.ok) return;
+
+  const batch = previewBatchCorrections(extracted.records, currentResult, corrected.records);
+  assert.equal(batch.ok, false);
+  if (batch.ok) return;
+  assert.match(batch.error, /not in the current quarantine queue/);
 });
