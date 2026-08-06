@@ -117,7 +117,7 @@ This version uses deterministic in-browser analytical logic rather than an exter
 ### Installation
 
 ```bash
-git clone https://github.com/krishnababby01/pulseops-forward-deployed-analytics.git
+git clone https://github.com/krishnamvwala/pulseops-forward-deployed-analytics.git
 cd pulseops-forward-deployed-analytics
 npm install
 npm run dev
