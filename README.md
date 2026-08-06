@@ -8,7 +8,7 @@ The application accepts retail sales data, validates it, runs an ETL-style workf
 
 ## Live Demo
 
-**[Open PulseOps](https://pulseops-krishna-mvwala.mvwalakrishna.chatgpt.site)**
+**[Open PulseOps](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev)**
 
 The hosted application is a private portfolio deployment. The repository contains no client or employer data.
 
@@ -99,7 +99,7 @@ This version uses deterministic in-browser analytical logic rather than an exter
 
 ## Try It
 
-1. Open the [live application](https://pulseops-krishna-mvwala.mvwalakrishna.chatgpt.site).
+1. Open the [live application](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev).
 2. Select **Download sample CSV** or use [`sample-data/pulseops_sample_sales.csv`](sample-data/pulseops_sample_sales.csv).
 3. Upload the file.
 4. Review the validation and source-row counts.
