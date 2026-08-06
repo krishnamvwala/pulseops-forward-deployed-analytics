@@ -35,7 +35,7 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Operational transparency | Four-stage pipeline execution trace |
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
 | Performance investigation | Regional ranking and category economics |
-| Guided analysis | Dataset-aware analytical copilot |
+| Guided analysis | SQL-backed analytical copilot with visible query evidence |
 | Confidentiality | Synthetic scenario, session-only processing, no database |
 
 ## Solution Architecture
@@ -51,7 +51,7 @@ flowchart TB
         J[Cleaned CSV]
         E[KPI calculations]
         F[Regional and category analysis]
-        G[Analyst copilot]
+        G[SQL-backed analyst copilot]
         H[Issue log]
     end
 
@@ -59,8 +59,10 @@ flowchart TB
     C -->|Safe to correct| D
     C -->|Risky or ambiguous| I
     C -->|Finding| H
-    D --> E
-    D --> F
+    D --> K[In-memory trusted_sales table]
+    K --> E
+    K --> F
+    K --> G
     D --> J
     E --> G
     F --> G
@@ -117,7 +119,7 @@ The current version uses a demonstration score that starts at 100 and applies pe
 
 ## Analyst Copilot Design
 
-The copilot interprets a small set of business intents and calculates answers directly from the loaded data. Supported topics include:
+The copilot interprets a small set of business intents, selects an approved SQL template, and executes it against the browser's in-memory `trusted_sales` table. The result includes the plain-language answer, a ranked result table, the trusted-row coverage, and an expandable copy of the exact SQL. Supported topics include:
 
 - Revenue by region
 - Margin by category
@@ -125,7 +127,7 @@ The copilot interprets a small set of business intents and calculates answers di
 - Late-order operational focus
 - Overall dataset summary
 
-The design intentionally does not claim to be a production AI assistant. It is a deterministic proof of concept that demonstrates how an analytical interface can be layered over trusted data. A production version could introduce an LLM only after adding:
+Limits are parsed as bounded integers from 1–5, and unrecognized user text never enters the SQL statement. The design intentionally does not claim to be a production AI assistant. It is a deterministic proof of concept that demonstrates how a governed natural-language interface can be layered over trusted data. A production version could introduce an LLM only after adding:
 
 - Approved model access
 - Row-level permissions
@@ -143,7 +145,7 @@ The design intentionally does not claim to be a production AI assistant. It is a
 - The interface separates corrected values from quarantined records so users can see what changed and why.
 - Impossible dates receive specific explanations, such as an invalid month or a day beyond the length of that month.
 - KPIs show both the headline result and supporting context.
-- Suggested questions help a new user discover the copilot.
+- Suggested questions help a new user discover the copilot, while the SQL trace makes each answer explainable.
 - The portfolio disclosure separates demonstrated capability from client claims.
 
 ## Security and Privacy
@@ -186,13 +188,13 @@ Produced a Cloudflare-compatible build and a hosted demonstration with a custom 
 5. Review corrections, removed duplicates, quarantined rows, and before/after quality.
 6. Download the cleaned CSV.
 7. Compare regional revenue and category margins.
-8. Ask the copilot which region leads revenue.
-9. Explain that answers are calculated from the published dataset.
+8. Ask the copilot to show the top two regions by revenue.
+9. Open the SQL trace and explain that the query ran only against the published dataset.
 10. Close with production extensions and security requirements.
 
 ## Validation
 
-The application passed its deployment build, server-render test, and automated messy-data ETL tests before publication. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, and conflicting duplicate IDs.
+The application passed its deployment build, lint checks, server-render test, automated messy-data ETL tests, and SQL-query tests before publication. The SQL tests confirm the top-two ranking and verify that unrecognized user text cannot be placed into an executable query. The ETL tests cover safe normalization, exact-duplicate removal, negative values, missing values, invalid dates, cost above revenue, and conflicting duplicate IDs.
 
 Recommended manual acceptance checks:
 

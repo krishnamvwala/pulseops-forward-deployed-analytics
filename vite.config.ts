@@ -44,6 +44,12 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    optimizeDeps: {
+      // AlaSQL ships an optional React Native file-system adapter that this
+      // browser-only app does not use. Keep those mobile modules out of Vite's
+      // local dependency scan while still pre-bundling AlaSQL's browser build.
+      exclude: ["react-native", "react-native-fs"],
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

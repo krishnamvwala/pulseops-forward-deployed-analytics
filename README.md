@@ -2,7 +2,7 @@
 
 PulseOps is an interactive portfolio project that demonstrates how a Forward-Deployed Engineer can take a loosely defined customer problem and turn it into a usable data product.
 
-The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, calculates business KPIs from trusted rows, and provides a simple analyst copilot for investigating the published dataset.
+The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
 
 ![PulseOps social preview](public/og.png)
 
@@ -35,7 +35,7 @@ The application provides an end-to-end workflow:
 2. **Validate** — Check required columns, missing values, data types, duplicate IDs, dates, and financial business rules without changing the raw upload.
 3. **Transform** — Normalize safe formatting differences, remove exact duplicates, and quarantine values that would require guessing.
 4. **Publish** — Recalculate KPIs and regional/category views from trusted rows only, with a downloadable cleaned CSV.
-5. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality.
+5. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality. The app maps supported questions to approved SQL templates, runs them against the in-memory trusted table, and exposes the query behind each answer.
 
 ```mermaid
 flowchart LR
@@ -63,7 +63,8 @@ flowchart LR
 - Revenue, gross margin, on-time delivery, and order KPIs
 - Regional revenue ranking
 - Category margin analysis
-- Dataset-aware question-and-answer experience
+- SQL-backed, dataset-aware question-and-answer experience
+- Ranked answer tables, trusted-row coverage, and an expandable SQL execution trace
 - Responsive layout for desktop, tablet, and mobile
 - Portfolio disclosure and customer-data privacy notice
 
@@ -103,17 +104,19 @@ Safe formatting differences are corrected and logged. Exact duplicate records ar
 | Source quality | A demonstration score reduced by findings, required corrections, and duplicates |
 | Published quality | Percentage indicating whether the released rows pass all publish rules |
 
-## Analyst Copilot
+## SQL-Backed Analyst Copilot
 
-The copilot answers questions using calculations from the currently loaded dataset. It can explain:
+The copilot runs real SQL against an in-memory `trusted_sales` table created from the currently published rows. For example, asking `Show the top 2 regions by revenue` executes an approved aggregation with `GROUP BY`, `ORDER BY`, and `LIMIT 2`, then returns the ranked answer, revenue values, order counts, trusted-row coverage, and the exact SQL statement.
 
-- Which region leads revenue
-- Which category has the strongest margin
+It can answer:
+
+- Which regions lead revenue, including the requested top 1–5
+- Which categories have the strongest margin, including the requested top 1–5
 - Whether data-quality issues were detected
 - Where operations should investigate late orders
 - Overall revenue, order count, and margin
 
-This version uses deterministic in-browser analytical logic rather than an external LLM. That keeps the demo fast, private, and usable without API credentials. A production extension could connect the validated dataset to an approved language model with access controls, citations, and audit logging.
+Natural-language wording selects only from allowlisted query templates; typed text is never inserted directly into SQL. This version uses deterministic in-browser question routing and AlaSQL rather than an external LLM or shared database. Uploaded data therefore stays in the browser, and the demo remains usable without API credentials. A production extension could connect the validated dataset to an approved language model and warehouse with access controls, semantic definitions, citations, and audit logging.
 
 ## Try It
 
@@ -124,7 +127,8 @@ This version uses deterministic in-browser analytical logic rather than an exter
 5. Select **Run ETL pipeline**.
 6. Review safe corrections, removed duplicates, and the row-level quarantine reasons.
 7. Download the cleaned CSV and inspect the executive KPIs.
-8. Ask Pulse: `Which region leads revenue?`
+8. Ask Pulse: `Show the top 2 regions by revenue`.
+9. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
 
 ## Run Locally
 
@@ -159,6 +163,7 @@ npm run build
 - Next.js-compatible application structure
 - vinext and Vite
 - Cloudflare-compatible deployment output
+- AlaSQL for browser-side SQL execution over trusted rows
 - CSS-based responsive dashboard visualization
 - Browser `FileReader` and client-side CSV processing
 
@@ -172,6 +177,7 @@ app/
   globals.css       Application design system and responsive layout
   layout.tsx        Metadata and social-sharing configuration
   page.tsx          Interactive pipeline controls, KPIs, and copilot
+  sql-analyst.ts    Approved question templates, in-memory SQL, and formatted answers
 public/
   og.png            Social-sharing preview
 sample-data/
@@ -181,6 +187,7 @@ docs/
 tests/
   etl.test.mjs      Messy-data transformation and quarantine tests
   rendered-html.test.mjs
+  sql-analyst.test.mjs
 .openai/
   hosting.json      Hosting configuration
 ```

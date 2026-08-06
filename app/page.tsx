@@ -8,6 +8,7 @@ import {
   runEtl,
 } from "./etl";
 import type { EtlResult, RawSalesRecord, SalesRow } from "./etl";
+import type { AnalystResponse, QueryColumn, QueryValue } from "./sql-analyst";
 
 const demoRows: SalesRow[] = [
   { order_id: "ORD-1001", date: "2026-07-21", region: "South", category: "Beverages", revenue: 18450, cost: 11260, status: "Delivered" },
@@ -64,6 +65,7 @@ export default function Home() {
   const [answer, setAnswer] = useState(
     "West is the current revenue leader. Ask me about regions, margins, late orders, or data quality.",
   );
+  const [queryTrace, setQueryTrace] = useState<AnalystResponse | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const issues = etlResult?.issues ?? [];
@@ -145,6 +147,7 @@ export default function Home() {
       setPipelineStatus("ready");
       setLastRun("Extracted • ready to validate and transform");
       setAnswer("Your raw file is loaded but has not been cleaned. Run the ETL pipeline before asking about performance.");
+      setQueryTrace(null);
     };
     reader.readAsText(file);
   }
@@ -162,33 +165,40 @@ export default function Home() {
       setAnswer(
         `The pipeline published ${result.rows.length} trusted rows, corrected ${result.corrections.length} values, removed ${result.duplicatesResolved} exact duplicate${result.duplicatesResolved === 1 ? "" : "s"}, and quarantined ${result.quarantinedRows} risky row${result.quarantinedRows === 1 ? "" : "s"}.`,
       );
+      setQueryTrace(null);
     }, 650);
   }
 
-  function answerQuestion(value = question) {
-    const normalized = value.toLowerCase();
-    const bestRegion = analytics.byRegion[0];
-    const bestCategory = analytics.byCategory[0];
-
+  async function answerQuestion(value = question) {
     if (!value.trim()) return;
     if (pipelineStatus !== "complete" || !etlResult) {
       setAnswer("Run the ETL pipeline first so I answer from the cleaned, published dataset—not the raw upload.");
-    } else if (normalized.includes("region") || normalized.includes("revenue")) {
-      setAnswer(`${bestRegion?.name ?? "No region"} leads revenue at ${money.format(bestRegion?.value ?? 0)}. It contributes ${analytics.revenue ? (((bestRegion?.value ?? 0) / analytics.revenue) * 100).toFixed(1) : 0}% of total revenue.`);
-    } else if (normalized.includes("margin") || normalized.includes("category")) {
-      setAnswer(`${bestCategory?.name ?? "No category"} has the strongest gross margin at ${bestCategory?.margin.toFixed(1) ?? 0}%. I would validate whether that advantage is driven by pricing, product mix, or lower fulfillment cost.`);
-    } else if (normalized.includes("quality") || normalized.includes("issue") || normalized.includes("trust")) {
-      setAnswer(`Source quality was ${sourceQuality}% and published quality is ${publishedQuality}%. The pipeline corrected ${corrections.length} values, resolved ${etlResult.duplicatesResolved} exact duplicates, and quarantined ${quarantinedCount} risky rows.`);
-    } else if (normalized.includes("late") || normalized.includes("operation") || normalized.includes("focus")) {
-      setAnswer(`${analytics.lateOrders} orders are late, producing an on-time rate of ${analytics.onTimeRate.toFixed(1)}%. I would start by comparing late orders by region and category, then inspect upstream fulfillment timestamps.`);
+      setQueryTrace(null);
     } else {
-      setAnswer(`The published dataset contains ${rows.length} trusted orders and ${money.format(analytics.revenue)} in revenue at a ${analytics.grossMargin.toFixed(1)}% gross margin. Try asking about the top region, best category, late orders, or data quality.`);
+      const { runAnalystQuery } = await import("./sql-analyst");
+      const response = runAnalystQuery(value, rows, {
+        sourceRowCount: rawRowCount,
+        quarantinedCount,
+        correctionsCount: corrections.length,
+        duplicatesResolved: etlResult.duplicatesResolved,
+        sourceQuality,
+        publishedQuality,
+      });
+      setAnswer(response.answer);
+      setQueryTrace(response);
     }
     setQuestion("");
   }
 
+  function formatQueryValue(value: QueryValue, column: QueryColumn) {
+    if (column.format === "currency") return money.format(Number(value));
+    if (column.format === "percent") return `${Number(value).toFixed(1)}%`;
+    if (column.format === "number") return Number(value).toLocaleString("en-US");
+    return String(value);
+  }
+
   const suggestions = [
-    "Which region leads revenue?",
+    "Show the top 2 regions by revenue",
     "What category has the best margin?",
     "Are there data quality issues?",
     "Where should operations focus?",
@@ -426,7 +436,36 @@ export default function Home() {
               <div className="pulse-orb">P</div>
               <div><p className="section-kicker">Analyst copilot</p><h2>Ask Pulse about the loaded data</h2><p>Answers are calculated from the current published dataset—not a static dashboard.</p></div>
             </div>
-            <div className="answer-box"><span>Pulse</span><p>{answer}</p></div>
+            <div className="answer-area">
+              <div className="answer-box"><span>Pulse</span><p>{answer}</p></div>
+              {queryTrace && (
+                <div className="query-evidence">
+                  <div className="query-meta">
+                    <span className="trusted-query-badge">Trusted data only</span>
+                    <span>{queryTrace.coverage}</span>
+                  </div>
+                  {queryTrace.rows.length > 0 && (
+                    <div className="query-result-wrap">
+                      <table className="query-result-table" aria-label={`${queryTrace.template} query results`}>
+                        <thead><tr>{queryTrace.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
+                        <tbody>
+                          {queryTrace.rows.map((row, rowIndex) => (
+                            <tr key={`${queryTrace.template}-${rowIndex}`}>
+                              {queryTrace.columns.map((column) => <td key={column.key}>{formatQueryValue(row[column.key], column)}</td>)}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <details className="sql-trace">
+                    <summary><span>View SQL executed</span><small>{queryTrace.template}</small></summary>
+                    <pre><code>{queryTrace.sql}</code></pre>
+                    <p><code>trusted_sales</code> is an in-memory table containing only the current published rows.</p>
+                  </details>
+                </div>
+              )}
+            </div>
             <div className="suggestion-row">
               {suggestions.map((suggestion) => <button key={suggestion} onClick={() => answerQuestion(suggestion)}>{suggestion}</button>)}
             </div>
