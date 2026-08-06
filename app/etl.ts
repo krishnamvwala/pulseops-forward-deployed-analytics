@@ -41,10 +41,23 @@ export type DataCorrection = {
   reason: "Text normalization" | "Date normalization" | "Numeric normalization";
 };
 
+export type QuarantinedProblem = {
+  field: string;
+  value: string;
+  message: string;
+};
+
+export type QuarantinedRecord = {
+  sourceRow: number;
+  orderId: string;
+  problems: QuarantinedProblem[];
+};
+
 export type EtlResult = {
   rows: SalesRow[];
   issues: DataIssue[];
   corrections: DataCorrection[];
+  quarantinedRecords: QuarantinedRecord[];
   duplicatesResolved: number;
   quarantinedRows: number;
   sourceQualityScore: number;
@@ -194,6 +207,55 @@ function parseDateValue(raw: string) {
   return null;
 }
 
+const monthNames = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function invalidDateMessage(raw: string) {
+  const trimmed = raw.trim();
+  const yearFirst = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  const monthFirst = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+
+  const year = yearFirst ? Number(yearFirst[1]) : monthFirst ? Number(monthFirst[3]) : null;
+  const month = yearFirst ? Number(yearFirst[2]) : monthFirst ? Number(monthFirst[1]) : null;
+  const day = yearFirst ? Number(yearFirst[3]) : monthFirst ? Number(monthFirst[2]) : null;
+
+  if (year === null || month === null || day === null) {
+    return "Invalid or unsupported date format";
+  }
+  if (month < 1 || month > 12) {
+    return `Invalid date: month ${month} does not exist`;
+  }
+
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) {
+    return `Invalid date: ${monthNames[month - 1]} ${year} has ${daysInMonth} days`;
+  }
+
+  return "Invalid or unsupported date format";
+}
+
+function issueValue(record: RawSalesRecord, field: string) {
+  if (field === "revenue / cost") {
+    return `revenue=${record.values.revenue || "(blank)"}, cost=${record.values.cost || "(blank)"}`;
+  }
+  if ((requiredColumns as readonly string[]).includes(field)) {
+    return record.values[field as RequiredColumn].trim() || "(blank)";
+  }
+  return "(not available)";
+}
+
 function calculateSourceQuality(issues: DataIssue[], corrections: DataCorrection[], duplicatesResolved: number) {
   const errors = issues.filter((issue) => issue.severity === "error").length;
   const warnings = issues.filter((issue) => issue.severity === "warning").length;
@@ -267,7 +329,7 @@ export function runEtl(records: RawSalesRecord[]): EtlResult {
 
     const normalizedDate = parseDateValue(record.values.date);
     if (record.values.date.trim() && !normalizedDate) {
-      issues.push({ row, field: "date", message: "Invalid date format", severity: "error", action: "quarantined" });
+      issues.push({ row, field: "date", message: invalidDateMessage(record.values.date), severity: "error", action: "quarantined" });
       quarantined.add(row);
     } else if (normalizedDate && record.values.date !== normalizedDate) {
       rowCorrections.push({ row, field: "date", before: record.values.date, after: normalizedDate, reason: "Date normalization" });
@@ -303,10 +365,25 @@ export function runEtl(records: RawSalesRecord[]): EtlResult {
     corrections.push(...rowCorrections);
   }
 
+  const quarantinedRecords = records
+    .filter((record) => quarantined.has(record.sourceRow))
+    .map((record) => ({
+      sourceRow: record.sourceRow,
+      orderId: record.values.order_id.trim() || "Missing order ID",
+      problems: issues
+        .filter((issue) => issue.row === record.sourceRow && issue.action === "quarantined")
+        .map((issue) => ({
+          field: issue.field,
+          value: issueValue(record, issue.field),
+          message: issue.message,
+        })),
+    }));
+
   return {
     rows,
     issues,
     corrections,
+    quarantinedRecords,
     duplicatesResolved,
     quarantinedRows: quarantined.size,
     sourceQualityScore: calculateSourceQuality(issues, corrections, duplicatesResolved),

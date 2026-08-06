@@ -24,6 +24,7 @@ test("server-renders the PulseOps ETL workspace", async () => {
   assert.match(html, /Run ETL pipeline/);
   assert.match(html, /Before &amp; after quality/);
   assert.match(html, /Transformation summary/);
+  assert.match(html, /Quarantined records/);
   assert.match(html, /Download cleaned CSV/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|Building your site/i);
 });

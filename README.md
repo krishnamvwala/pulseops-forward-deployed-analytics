@@ -56,6 +56,7 @@ flowchart LR
 - Safe automatic correction of whitespace, casing, dates, and formatted numbers
 - Exact-duplicate removal and conflicting-ID quarantine
 - Invalid-row quarantine before aggregation
+- Row-level quarantine table with the original value and validation reason
 - Pipeline status and execution trace
 - Before-and-after data-quality comparison and transformation summary
 - Downloadable cleaned CSV after a successful pipeline run
@@ -121,7 +122,7 @@ This version uses deterministic in-browser analytical logic rather than an exter
 3. Upload the file.
 4. Confirm that the raw file is extracted but still waiting for ETL.
 5. Select **Run ETL pipeline**.
-6. Review safe corrections, removed duplicates, quarantined rows, and before/after quality.
+6. Review safe corrections, removed duplicates, and the row-level quarantine reasons.
 7. Download the cleaned CSV and inspect the executive KPIs.
 8. Ask Pulse: `Which region leads revenue?`
 

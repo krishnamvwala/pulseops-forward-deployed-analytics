@@ -42,14 +42,40 @@ test("corrects safe formatting, removes exact duplicates, and quarantines risky 
   assert.equal(result.quarantinedRows, 5);
   assert.ok(result.corrections.some((item) => item.field === "date" && item.after === "2026-07-21"));
   assert.ok(result.issues.some((item) => item.message === "Negative financial value"));
-  assert.ok(result.issues.some((item) => item.message === "Invalid date format"));
+  assert.ok(result.issues.some((item) => item.message === "Invalid or unsupported date format"));
   assert.ok(result.issues.some((item) => item.message === "Cost exceeds revenue"));
   assert.ok(result.issues.some((item) => item.message === "Conflicting duplicate order ID"));
+  assert.ok(result.quarantinedRecords.some((item) => item.orderId === "ORD-4" && item.problems[0].value === "not-a-date"));
   assert.equal(result.publishedQualityScore, 100);
 
   const cleaned = createSalesCsv(result.rows);
   assert.match(cleaned, /ORD-1,2026-07-21,West,Beverages,1200,800,Delivered/);
   assert.doesNotMatch(cleaned, /not-a-date|-50/);
+});
+
+test("explains impossible dates without guessing a replacement", () => {
+  const impossibleDates = `order_id,date,region,category,revenue,cost,status
+ORD-1004,2026-13-01,West,Sports,700,400,Shipped
+ORD-1005,2026-02-30,North,Clothing,650,300,Pending
+ORD-1006,2026-01-15,North,Electronics,1200,900,Completed`;
+  const extracted = extractCsv(impossibleDates);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+
+  const result = runEtl(extracted.records);
+  assert.deepEqual(result.rows.map((row) => row.order_id), ["ORD-1006"]);
+  assert.equal(result.quarantinedRecords.length, 2);
+  assert.deepEqual(
+    result.quarantinedRecords.map((record) => ({
+      orderId: record.orderId,
+      value: record.problems[0].value,
+      message: record.problems[0].message,
+    })),
+    [
+      { orderId: "ORD-1004", value: "2026-13-01", message: "Invalid date: month 13 does not exist" },
+      { orderId: "ORD-1005", value: "2026-02-30", message: "Invalid date: February 2026 has 28 days" },
+    ],
+  );
 });
 
 test("rejects files that do not meet the data contract", () => {

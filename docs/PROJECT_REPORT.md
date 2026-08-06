@@ -30,7 +30,7 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Simple ingestion | Browser-based CSV upload and sample-file download |
 | Repeatable input format | Seven-column data contract |
 | Data-quality controls | Schema, completeness, type, uniqueness, date, and business-rule checks |
-| Error isolation | Risky rows quarantined before analytical calculations |
+| Error isolation | Risky rows quarantined with source values and row-level reasons before analytical calculations |
 | Safe correction | Formatting, date, and numeric normalization with a correction log |
 | Operational transparency | Four-stage pipeline execution trace |
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
@@ -93,7 +93,7 @@ Accepted values are converted to a typed `SalesRow` structure. The pipeline trim
 
 ### 4. Publish
 
-The interface compares source quality with published quality, reports corrections and exceptions, enables a cleaned-CSV download, and recomputes KPI cards, region rankings, category margins, and copilot context from published rows only.
+The interface compares source quality with published quality, reports corrections and exceptions, displays every quarantined record with its source row, order ID, original value, and reason, enables a cleaned-CSV download, and recomputes KPI cards, region rankings, category margins, and copilot context from published rows only.
 
 ## Business Metrics
 
@@ -141,6 +141,7 @@ The design intentionally does not claim to be a production AI assistant. It is a
 - Pipeline stages provide understandable data lineage.
 - Validation uses plain-language checks rather than only error codes.
 - The interface separates corrected values from quarantined records so users can see what changed and why.
+- Impossible dates receive specific explanations, such as an invalid month or a day beyond the length of that month.
 - KPIs show both the headline result and supporting context.
 - Suggested questions help a new user discover the copilot.
 - The portfolio disclosure separates demonstrated capability from client claims.

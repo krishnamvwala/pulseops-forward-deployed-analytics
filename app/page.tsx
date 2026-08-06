@@ -68,6 +68,7 @@ export default function Home() {
 
   const issues = etlResult?.issues ?? [];
   const corrections = etlResult?.corrections ?? [];
+  const quarantinedRecords = etlResult?.quarantinedRecords ?? [];
   const trustedCount = etlResult?.rows.length ?? 0;
   const quarantinedCount = etlResult?.quarantinedRows ?? 0;
   const sourceQuality = etlResult?.sourceQualityScore ?? 0;
@@ -328,6 +329,48 @@ export default function Home() {
                 <span className="summary-icon">!</span>
                 <div><strong>{quarantinedCount} rows quarantined for review</strong><small>Missing values, invalid dates, negative values, and conflicting IDs</small></div>
               </article>
+            </div>
+            <div className="quarantine-panel">
+              <div className="quarantine-heading">
+                <div>
+                  <strong>Quarantined records</strong>
+                  <span>Excluded from KPIs, but preserved here with the original value and reason.</span>
+                </div>
+                <span className="quarantine-count">{quarantinedRecords.length} record{quarantinedRecords.length === 1 ? "" : "s"}</span>
+              </div>
+              {!etlResult ? (
+                <p className="quarantine-empty pending">Run the ETL pipeline to identify records that need review.</p>
+              ) : quarantinedRecords.length ? (
+                <div className="quarantine-table-wrap">
+                  <table className="quarantine-table" aria-label="Quarantined records and validation reasons">
+                    <thead>
+                      <tr><th>Order ID</th><th>Source row</th><th>Invalid field and value</th><th>Reason</th></tr>
+                    </thead>
+                    <tbody>
+                      {quarantinedRecords.map((record) => (
+                        <tr key={record.sourceRow}>
+                          <td><strong>{record.orderId}</strong></td>
+                          <td>{record.sourceRow}</td>
+                          <td>
+                            <div className="problem-list">
+                              {record.problems.map((problem, index) => (
+                                <span key={`${problem.field}-${index}`}><b>{problem.field}</b><code>{problem.value}</code></span>
+                              ))}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="reason-list">
+                              {record.problems.map((problem, index) => <span key={`${problem.message}-${index}`}>{problem.message}</span>)}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="quarantine-empty clear"><span>✓</span>No records were quarantined in this pipeline run.</p>
+              )}
             </div>
             <div className="transformation-footer">
               <div><strong>Every change is traceable.</strong><span>No missing or risky business values are guessed.</span></div>
