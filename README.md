@@ -12,6 +12,19 @@ The application accepts retail sales data, runs a staged ETL workflow, safely co
 
 The hosted application is a public portfolio deployment. The repository contains no client or employer data.
 
+## What the Transform Stage Means
+
+In PulseOps, the transform stage performs safe type conversion and normalization, then separates trusted records from records that require review. It intentionally quarantines values that cannot be corrected without inventing information.
+
+Transform does not always mean automatically “fix everything.” For example:
+
+- A missing revenue value cannot be safely guessed.
+- A negative number could be an input error or a legitimate refund, so the pipeline should not reinterpret it without business context.
+- Two records with the same order ID may contain conflicting information.
+- An impossible date cannot be corrected without knowing the intended date.
+
+This approach protects the reliability of the published dataset: deterministic formatting problems are corrected, while ambiguous business values remain visible for investigation instead of being silently changed.
+
 ## What the Project Does
 
 PulseOps models a common customer engagement: regional teams send daily CSV extracts, but business leaders need one reliable view of revenue, margin, delivery performance, and data quality.
