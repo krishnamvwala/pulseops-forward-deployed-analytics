@@ -138,11 +138,13 @@ This version uses deterministic in-browser analytical logic rather than an exter
 ```bash
 git clone https://github.com/krishnamvwala/pulseops-forward-deployed-analytics.git
 cd pulseops-forward-deployed-analytics
-npm install
+npm ci --include=dev
 npm run dev
 ```
 
-Open the local URL printed by the development server.
+The lockfile selects the correct native packages automatically for Apple Silicon,
+Intel macOS, Windows, or Linux. Open the local URL printed by the development
+server.
 
 ### Build Validation
 
