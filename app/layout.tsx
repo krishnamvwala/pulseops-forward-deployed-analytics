@@ -21,7 +21,7 @@ export async function generateMetadata(): Promise<Metadata> {
       description: "From raw sales files to trusted decisions. Built by Krishna Mvwala.",
       type: "website",
       url: origin,
-      images: [{ url: `${origin}/og.png`, width: 1735, height: 909, alt: "PulseOps forward-deployed analytics portfolio" }],
+      images: [{ url: `${origin}/og.png`, width: 2346, height: 1266, alt: "PulseOps forward-deployed analytics portfolio" }],
     },
     twitter: {
       card: "summary_large_image",

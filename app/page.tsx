@@ -25,6 +25,7 @@ import type {
   SalesRow,
 } from "./etl";
 import type { AnalystResponse, QueryColumn, QueryValue } from "./sql-analyst";
+import { getRegionPerformanceBand } from "./region-performance.mjs";
 
 const demoRows: SalesRow[] = [
   { order_id: "ORD-1001", date: "2026-07-21", region: "South", category: "Beverages", revenue: 18450, cost: 11260, status: "Delivered" },
@@ -1164,13 +1165,26 @@ export default function Home() {
               <div className="chart-panel">
                 <div className="panel-title"><div><strong>Revenue by region</strong><span>Ranked contribution</span></div><span>USD</span></div>
                 <div className="bar-chart">
-                  {analytics.byRegion.map((region, index) => (
-                    <div className="bar-row" key={region.name}>
-                      <span className="rank">0{index + 1}</span><strong>{region.name}</strong>
-                      <div className="bar-track"><div className="bar-fill" style={{ width: `${(region.value / maxRegionRevenue) * 100}%` }} /></div>
-                      <span>{money.format(region.value)}</span>
-                    </div>
-                  ))}
+                  {analytics.byRegion.map((region, index) => {
+                    const { band, label, symbol } = getRegionPerformanceBand(region.value, maxRegionRevenue);
+
+                    return (
+                      <div className="bar-row" key={region.name}>
+                        <span className="rank">0{index + 1}</span><strong>{region.name}</strong>
+                        <div
+                          className="bar-track"
+                          role="img"
+                          aria-label={`${region.name}: ${money.format(region.value)}, ${label.toLowerCase()} relative contribution`}
+                        >
+                          <div className={`bar-fill ${band}`} style={{ width: `${(region.value / maxRegionRevenue) * 100}%` }} />
+                        </div>
+                        <span className="bar-value">
+                          <span>{money.format(region.value)}</span>
+                          <small className={`bar-status ${band}`}><i aria-hidden="true">{symbol}</i>{label}</small>
+                        </span>
+                      </div>
+                    );
+                  })}
                   {!analytics.byRegion.length && <p className="empty-state">Run the pipeline to publish regional performance.</p>}
                 </div>
               </div>
