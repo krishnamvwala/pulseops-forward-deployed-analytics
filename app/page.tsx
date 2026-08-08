@@ -25,6 +25,7 @@ import type {
   SalesRow,
 } from "./etl";
 import type { AnalystResponse, QueryColumn, QueryValue } from "./sql-analyst";
+import { getRegionPerformanceBand } from "./region-performance.mjs";
 
 const demoRows: SalesRow[] = [
   { order_id: "ORD-1001", date: "2026-07-21", region: "South", category: "Beverages", revenue: 18450, cost: 11260, status: "Delivered" },
@@ -1165,9 +1166,7 @@ export default function Home() {
                 <div className="panel-title"><div><strong>Revenue by region</strong><span>Ranked contribution</span></div><span>USD</span></div>
                 <div className="bar-chart">
                   {analytics.byRegion.map((region, index) => {
-                    const band = ["leader", "strong", "watch", "attention"][index] ?? "attention";
-                    const label = ["Leader", "Strong", "Watch", "Attention"][index] ?? "Attention";
-                    const symbol = ["✓", "●", "▲", "!"][index] ?? "!";
+                    const { band, label, symbol } = getRegionPerformanceBand(region.value, maxRegionRevenue);
 
                     return (
                       <div className="bar-row" key={region.name}>
