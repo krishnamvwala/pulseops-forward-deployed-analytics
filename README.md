@@ -8,7 +8,7 @@ The application accepts retail sales data, runs a staged ETL workflow, safely co
 
 ## Live Demo
 
-**[Open PulseOps](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev)**
+**[Open PulseOps](https://pulseops-krishna-mvwala.mvwalakrishna.chatgpt.site)**
 
 The hosted application is a public portfolio deployment. The repository contains no client or employer data.
 
@@ -165,7 +165,7 @@ The agent API is currently a local-development service. It must receive inbound 
 
 ## Try It
 
-1. Open the [live application](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev).
+1. Open the [live application](https://pulseops-krishna-mvwala.mvwalakrishna.chatgpt.site).
 2. Select **Download sample CSV** or use [`sample-data/pulseops_sample_sales.csv`](sample-data/pulseops_sample_sales.csv).
 3. Upload the file.
 4. Confirm that the raw file is extracted but still waiting for ETL.
