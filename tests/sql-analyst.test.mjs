@@ -36,3 +36,14 @@ test("never places unrecognized user text into SQL", () => {
   assert.doesNotMatch(response.sql, /DROP TABLE/i);
   assert.match(response.sql, /SELECT COUNT\(\*\) AS trusted_orders/i);
 });
+
+test("returns governed remediation steps instead of the generic overview", () => {
+  const response = runAnalystQuery("Recommend the next remediation steps", rows, context);
+
+  assert.equal(response.template, "Governed remediation plan");
+  assert.match(response.answer, /1 quarantined row/);
+  assert.match(response.answer, /Export the correction queue/);
+  assert.match(response.answer, /Do not guess ambiguous values/);
+  assert.doesNotMatch(response.answer, /published dataset contains/i);
+  assert.match(response.sql, /SELECT COUNT\(\*\) AS trusted_rows/i);
+});
