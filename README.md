@@ -2,7 +2,7 @@
 
 PulseOps is an interactive portfolio project that demonstrates how a Forward-Deployed Engineer can take a loosely defined customer problem and turn it into a usable data product.
 
-The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, applies a configurable revenue-outlier contract, supports human-verified correction and revalidation, calculates business KPIs from trusted rows, and provides a SQL-backed analyst copilot for investigating the published dataset.
+The application accepts retail sales data, runs a staged ETL workflow, safely corrects common formatting problems, quarantines risky records, applies a configurable revenue-outlier contract, supports human-verified correction and revalidation, calculates business KPIs from trusted rows, and provides a governed analyst copilot for investigating the published dataset. The copilot works locally with approved SQL templates and can connect to the separate [PulseOps AI Agent](https://github.com/krishnamvwala/pulseops-ai-agent), where Microsoft Foundry selects from read-only, audited tools.
 
 ![PulseOps social preview](public/og.png)
 
@@ -45,7 +45,7 @@ The application provides an end-to-end workflow:
 3. **Transform** — Normalize safe formatting differences, remove exact duplicates, and quarantine values that would require guessing.
 4. **Review** — Let the customer enter source-verified corrections; rerun the full data contract and retain a before/after audit trail.
 5. **Publish** — Recalculate KPIs and regional/category views from trusted rows only, with a downloadable cleaned CSV.
-6. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality. The app maps supported questions to approved SQL templates, runs them against the in-memory trusted table, and exposes the query behind each answer.
+6. **Investigate** — Ask the analyst copilot questions about revenue, margin, late orders, and quality. In standalone mode the app maps supported questions to approved SQL templates. When the PulseOps AI Agent is configured, it imports the current pipeline with source-row lineage and returns a Foundry-selected governed tool result with evidence.
 
 ```mermaid
 flowchart LR
@@ -86,6 +86,9 @@ flowchart LR
 - Regional revenue ranking
 - Category margin analysis
 - SQL-backed, dataset-aware question-and-answer experience
+- Optional Microsoft Foundry agent integration through a separate FastAPI service
+- Governed tool-call and evidence details displayed with every agent answer
+- Explicit local SQL fallback when the agent service is unavailable
 - Ranked answer tables, trusted-row coverage, and an expandable SQL execution trace
 - Responsive layout for desktop, tablet, and mobile
 - Portfolio disclosure and customer-data privacy notice
@@ -142,9 +145,9 @@ At production scale, teams should correct recurring problems in the source syste
 | Source quality | A demonstration score reduced by findings, required corrections, and duplicates |
 | Published quality | Percentage indicating whether the released rows pass all publish rules |
 
-## SQL-Backed Analyst Copilot
+## Governed Analyst Copilot
 
-The copilot runs real SQL against an in-memory `trusted_sales` table created from the currently published rows. For example, asking `Show the top 2 regions by revenue` executes an approved aggregation with `GROUP BY`, `ORDER BY`, and `LIMIT 2`, then returns the ranked answer, revenue values, order counts, trusted-row coverage, and the exact SQL statement.
+In standalone mode, the copilot runs real SQL against an in-memory `trusted_sales` table created from the currently published rows. For example, asking `Show the top 2 regions by revenue` executes an approved aggregation with `GROUP BY`, `ORDER BY`, and `LIMIT 2`, then returns the ranked answer, revenue values, order counts, trusted-row coverage, and the exact SQL statement.
 
 It can answer:
 
@@ -154,7 +157,11 @@ It can answer:
 - Where operations should investigate late orders
 - Overall revenue, order count, and margin
 
-Natural-language wording selects only from allowlisted query templates; typed text is never inserted directly into SQL. This version uses deterministic in-browser question routing and AlaSQL rather than an external LLM or shared database. Uploaded data therefore stays in the browser, and the demo remains usable without API credentials. A production extension could connect the validated dataset to an approved language model and warehouse with access controls, semantic definitions, citations, and audit logging.
+Natural-language wording never becomes free-form SQL. The standalone path selects only from allowlisted in-browser query templates, so the public demo remains usable without API credentials or a backend.
+
+For a local full-stack demonstration, set `NEXT_PUBLIC_PULSEOPS_AGENT_API_URL` to the separately running PulseOps AI Agent. The dashboard lazily imports only the active synthetic pipeline, including exact `source_row` lineage, and then sends the question with the returned pipeline identifier. The FastAPI service scopes the conversation to that pipeline, lets Microsoft Foundry select only from five approved read-only tools, constructs the factual answer from validated tool output, and returns the provider, tool calls, evidence, and audit identifiers. If the service is unavailable, the interface clearly labels and uses the governed local SQL fallback instead of pretending an agent answered.
+
+The agent API is currently a local-development service. It must receive inbound authentication, user-to-pipeline authorization, rate limits, and production secret management before it is exposed publicly. No Azure credential or API key is included in the browser bundle.
 
 ## Try It
 
@@ -172,7 +179,7 @@ Natural-language wording selects only from allowlisted query templates; typed te
 12. Confirm the trusted-row count, KPIs, cleaned CSV, and decision audit update.
 13. Download the cleaned CSV and inspect the executive KPIs.
 14. Ask Pulse: `Show the top 2 regions by revenue`.
-15. Expand **View SQL executed** to inspect the query and confirm which trusted rows were used.
+15. In standalone mode, expand **View SQL executed**. With the AI Agent configured, confirm that the answer instead shows the Foundry provider, governed tool name, and evidence reference.
 
 ## Run Locally
 
@@ -194,6 +201,14 @@ The lockfile selects the correct native packages automatically for Apple Silicon
 Intel macOS, Windows, or Linux. Open the local URL printed by the development
 server.
 
+The dashboard does not require a backend. To test the optional PulseOps AI Agent
+integration, copy `.env.example` to `.env.local`, keep the default local API URL,
+and run the separate agent repository on port `8000` before starting this app:
+
+```dotenv
+NEXT_PUBLIC_PULSEOPS_AGENT_API_URL=http://127.0.0.1:8000/api/v1
+```
+
 ### Build Validation
 
 ```bash
@@ -208,10 +223,11 @@ npm run build
 - vinext and Vite
 - Cloudflare-compatible deployment output
 - AlaSQL for browser-side SQL execution over trusted rows
+- Optional FastAPI and Microsoft Foundry agent integration
 - CSS-based responsive dashboard visualization
 - Browser `FileReader` and client-side CSV processing
 
-No database, external API, or authentication is required for the current demonstration.
+No database, external API, or authentication is required for standalone browser mode. The optional local agent uses its own governed API and database; public deployment requires authentication and authorization first.
 
 ## Project Structure
 

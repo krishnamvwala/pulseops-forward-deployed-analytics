@@ -25,7 +25,16 @@ import type {
   SalesRow,
 } from "./etl";
 import type { AnalystResponse, QueryColumn, QueryValue } from "./sql-analyst";
+import { getAgentEvidenceLabel, restoreAgentLauncherFocus } from "./agent-ui.mjs";
 import { getRegionPerformanceBand } from "./region-performance.mjs";
+import {
+  askPulseOpsAgent,
+  buildAgentPipelineImport,
+  getAgentStatus,
+  importAgentPipeline,
+  pulseOpsAgentConfigured,
+} from "./pulseops-agent";
+import type { AgentEvidence, AgentToolUse } from "./pulseops-agent";
 
 const demoRows: SalesRow[] = [
   { order_id: "ORD-1001", date: "2026-07-21", region: "South", category: "Beverages", revenue: 18450, cost: 11260, status: "Delivered" },
@@ -156,9 +165,21 @@ export default function Home() {
   const [uploadError, setUploadError] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState(
-    "West is the current revenue leader. Ask me about regions, margins, late orders, or data quality.",
+    "Choose a suggested question or type your own. I will answer from the current trusted dataset and show the evidence used.",
   );
   const [queryTrace, setQueryTrace] = useState<AnalystResponse | null>(null);
+  const [agentConnection, setAgentConnection] = useState<"local" | "checking" | "connected" | "unavailable">(
+    pulseOpsAgentConfigured ? "checking" : "local",
+  );
+  const [agentModel, setAgentModel] = useState<string | null>(null);
+  const [agentProvider, setAgentProvider] = useState<"deterministic" | "foundry" | null>(null);
+  const [agentPipelineId, setAgentPipelineId] = useState<string | null>(null);
+  const [agentConversationId, setAgentConversationId] = useState<string | null>(null);
+  const [agentToolUses, setAgentToolUses] = useState<AgentToolUse[]>([]);
+  const [agentEvidence, setAgentEvidence] = useState<AgentEvidence[]>([]);
+  const [agentError, setAgentError] = useState("");
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [selectedSourceRow, setSelectedSourceRow] = useState<number | null>(null);
   const [remediationDraft, setRemediationDraft] = useState<Record<RequiredColumn, string> | null>(null);
   const [remediationError, setRemediationError] = useState("");
@@ -178,6 +199,7 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const batchFileRef = useRef<HTMLInputElement>(null);
   const remediationEditorRef = useRef<HTMLFormElement>(null);
+  const aiLauncherRef = useRef<HTMLButtonElement>(null);
 
   const issues = etlResult?.issues ?? [];
   const corrections = etlResult?.corrections ?? [];
@@ -222,6 +244,46 @@ export default function Home() {
     quarantinePageStart,
     quarantinePageStart + quarantinePageSize,
   );
+
+  useEffect(() => {
+    if (!pulseOpsAgentConfigured) return;
+    let cancelled = false;
+    getAgentStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setAgentProvider(status.provider);
+        setAgentModel(status.model);
+        setAgentConnection(status.configured ? "connected" : "unavailable");
+        setAgentError(status.configured ? "" : "The agent provider is not fully configured.");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setAgentConnection("unavailable");
+        setAgentError(error instanceof Error ? error.message : "The agent service is unavailable.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setAgentPipelineId(null);
+    setAgentConversationId(null);
+    setAgentToolUses([]);
+    setAgentEvidence([]);
+  }, [etlResult, rawRecords, sourceName]);
+
+  useEffect(() => {
+    if (!agentOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAgentOpen(false);
+        restoreAgentLauncherFocus(aiLauncherRef.current);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [agentOpen]);
 
   useEffect(() => {
     if (selectedSourceRow === null) return;
@@ -647,13 +709,63 @@ export default function Home() {
   }
 
   async function answerQuestion(value = question) {
-    if (!value.trim()) return;
+    const submittedQuestion = value.trim();
+    if (!submittedQuestion || agentLoading) return;
     if (pipelineStatus !== "complete" || !etlResult) {
       setAnswer("Run the ETL pipeline first so I answer from the cleaned, published dataset—not the raw upload.");
       setQueryTrace(null);
+      setAgentToolUses([]);
+      setAgentEvidence([]);
+    } else if (pulseOpsAgentConfigured) {
+      setAgentLoading(true);
+      setAgentError("");
+      try {
+        let pipelineRunId = agentPipelineId;
+        let conversationId = agentConversationId;
+        if (!pipelineRunId) {
+          const importedPipeline = await importAgentPipeline(
+            buildAgentPipelineImport(sourceName, rawRecords, etlResult),
+          );
+          pipelineRunId = importedPipeline.id;
+          conversationId = null;
+          setAgentPipelineId(pipelineRunId);
+          setAgentConversationId(null);
+        }
+        const response = await askPulseOpsAgent(
+          pipelineRunId,
+          submittedQuestion,
+          conversationId,
+        );
+        setAnswer(response.answer);
+        setQueryTrace(null);
+        setAgentProvider(response.provider);
+        setAgentConversationId(response.conversation_id);
+        setAgentToolUses(response.tool_calls);
+        setAgentEvidence(response.evidence);
+        setAgentConnection("connected");
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "The live agent is unavailable.";
+        const { runAnalystQuery } = await import("./sql-analyst");
+        const response = runAnalystQuery(submittedQuestion, rows, {
+          sourceRowCount: rawRowCount,
+          quarantinedCount,
+          correctionsCount: corrections.length,
+          duplicatesResolved: etlResult.duplicatesResolved,
+          sourceQuality,
+          publishedQuality,
+        });
+        setAnswer(`Live agent unavailable; showing the governed local SQL result. ${response.answer}`);
+        setQueryTrace(response);
+        setAgentConnection("unavailable");
+        setAgentError(message);
+        setAgentToolUses([]);
+        setAgentEvidence([]);
+      } finally {
+        setAgentLoading(false);
+      }
     } else {
       const { runAnalystQuery } = await import("./sql-analyst");
-      const response = runAnalystQuery(value, rows, {
+      const response = runAnalystQuery(submittedQuestion, rows, {
         sourceRowCount: rawRowCount,
         quarantinedCount,
         correctionsCount: corrections.length,
@@ -663,6 +775,9 @@ export default function Home() {
       });
       setAnswer(response.answer);
       setQueryTrace(response);
+      setAgentProvider(null);
+      setAgentToolUses([]);
+      setAgentEvidence([]);
     }
     setQuestion("");
   }
@@ -675,11 +790,32 @@ export default function Home() {
   }
 
   const suggestions = [
+    "Summarize this pipeline",
     "Show the top 2 regions by revenue",
     "What category has the best margin?",
-    "Are there data quality issues?",
-    "Where should operations focus?",
+    "Explain the quarantined records",
+    "Recommend the next remediation steps",
   ];
+
+  const agentCapabilities = [
+    ["Summary", "Pipeline health and trusted-row counts"],
+    ["Analysis", "Revenue, margin, regions, and categories"],
+    ["Quality", "Quarantined records and validation issues"],
+    ["Changes", "KPI differences between pipeline runs"],
+    ["Actions", "Safe, human-reviewed remediation steps"],
+  ];
+
+  const agentConnectionLabel = agentConnection === "checking"
+    ? "Checking agent connection"
+    : agentConnection === "connected"
+      ? `${agentModel ?? "Agent"} · governed tools`
+      : agentConnection === "unavailable"
+        ? "Agent unavailable · SQL fallback ready"
+        : "Local governed SQL";
+  const answerSourceLabel = agentProvider === "foundry" && agentEvidence.length
+    ? "Foundry"
+    : "Pulse";
+  const agentEvidenceLabel = getAgentEvidenceLabel(agentProvider);
 
   const fileDetail = pipelineStatus === "complete" && etlResult
     ? `${rawRowCount} source rows • ${trustedCount} trusted • ${quarantinedCount} quarantined`
@@ -703,7 +839,7 @@ export default function Home() {
           <a className="nav-item active" href="#overview"><span>01</span>Overview</a>
           <a className="nav-item" href="#pipeline"><span>02</span>Pipeline</a>
           <a className="nav-item" href="#analysis"><span>03</span>Analysis</a>
-          <a className="nav-item" href="#copilot"><span>04</span>Ask Pulse</a>
+          <button className="nav-item nav-agent-button" type="button" onClick={() => setAgentOpen(true)}><span>04</span>Ask Pulse</button>
         </nav>
         <div className="project-owner">
           <div className="avatar">KM</div>
@@ -1202,53 +1338,113 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="copilot-card" id="copilot">
-            <div className="copilot-intro">
-              <div className="pulse-orb">P</div>
-              <div><p className="section-kicker">Analyst copilot</p><h2>Ask Pulse about the loaded data</h2><p>Answers are calculated from the current published dataset—not a static dashboard.</p></div>
-            </div>
-            <div className="answer-area">
-              <div className="answer-box"><span>Pulse</span><p>{answer}</p></div>
-              {queryTrace && (
-                <div className="query-evidence">
-                  <div className="query-meta">
-                    <span className="trusted-query-badge">Trusted data only</span>
-                    <span>{queryTrace.coverage}</span>
-                  </div>
-                  {queryTrace.rows.length > 0 && (
-                    <div className="query-result-wrap">
-                      <table className="query-result-table" aria-label={`${queryTrace.template} query results`}>
-                        <thead><tr>{queryTrace.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
-                        <tbody>
-                          {queryTrace.rows.map((row, rowIndex) => (
-                            <tr key={`${queryTrace.template}-${rowIndex}`}>
-                              {queryTrace.columns.map((column) => <td key={column.key}>{formatQueryValue(row[column.key], column)}</td>)}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  <details className="sql-trace">
-                    <summary><span>View SQL executed</span><small>{queryTrace.template}</small></summary>
-                    <pre><code>{queryTrace.sql}</code></pre>
-                    <p><code>trusted_sales</code> is an in-memory table containing only the current published rows.</p>
-                  </details>
-                </div>
-              )}
-            </div>
-            <div className="suggestion-row">
-              {suggestions.map((suggestion) => <button key={suggestion} onClick={() => answerQuestion(suggestion)}>{suggestion}</button>)}
-            </div>
-            <div className="question-box">
-              <input value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => event.key === "Enter" && answerQuestion()} placeholder="Ask a question about this dataset…" aria-label="Question for the analyst copilot" />
-              <button onClick={() => answerQuestion()} aria-label="Submit question">Ask</button>
-            </div>
-          </section>
-
           <footer><span>Designed and built by <strong>Krishna Mvwala</strong></span><span>© 2026 Krishna Mvwala · Portfolio evaluation only · No client data used</span></footer>
         </div>
       </section>
+
+      <div className={`ai-assistant ${agentOpen ? "open" : ""}`} id="copilot">
+        {agentOpen && (
+          <section className="ai-chat-panel" id="pulseops-ai-dialog" role="dialog" aria-modal="false" aria-labelledby="ai-chat-title">
+            <header className="ai-chat-header">
+              <div className="ai-chat-identity">
+                <div className="ai-mini-orb" aria-hidden="true">P</div>
+                <div>
+                  <span>PulseOps AI</span>
+                  <strong id="ai-chat-title">Ask about your trusted data</strong>
+                </div>
+              </div>
+              <button
+                className="ai-close"
+                type="button"
+                onClick={() => {
+                  setAgentOpen(false);
+                  restoreAgentLauncherFocus(aiLauncherRef.current);
+                }}
+                aria-label="Close PulseOps AI"
+              >×</button>
+            </header>
+
+            <div className="ai-chat-scroll">
+              <div className="ai-welcome">
+                <p>Hi! I can investigate the published dataset using approved, read-only tools. What would you like to know?</p>
+                <span className={`agent-connection ${agentConnection}`}><i aria-hidden="true" />{agentConnectionLabel}</span>
+              </div>
+
+              <div className="ai-capabilities" aria-label="Available agent capabilities">
+                <span className="ai-tools-label">What I can help with</span>
+                {agentCapabilities.map(([name, description]) => (
+                  <div className="ai-capability" key={name}><strong>{name}</strong><span>{description}</span></div>
+                ))}
+              </div>
+
+              <div className="suggestion-row ai-suggestions">
+                {suggestions.map((suggestion) => <button key={suggestion} disabled={agentLoading} onClick={() => answerQuestion(suggestion)}>{suggestion}</button>)}
+              </div>
+
+              <div className="answer-area">
+                <div className="answer-box"><span>{answerSourceLabel}</span><p>{answer}</p></div>
+                {agentEvidence.length > 0 && (
+                  <div className="agent-evidence">
+                    <div className="query-meta">
+                      <span className="trusted-query-badge">{agentEvidenceLabel}</span>
+                      <span>{agentToolUses.length} governed tool call{agentToolUses.length === 1 ? "" : "s"} · {agentEvidence.length} evidence reference{agentEvidence.length === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="agent-evidence-list">
+                      {agentToolUses.map((tool) => (
+                        <span key={tool.tool_call_id}><b>Tool</b>{tool.tool_name}</span>
+                      ))}
+                      {agentEvidence.map((evidence) => (
+                        <span key={`${evidence.evidence_type}-${evidence.reference_id}`}><b>Evidence</b>{evidence.label}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {queryTrace && (
+                  <div className="query-evidence">
+                    <div className="query-meta">
+                      <span className="trusted-query-badge">Trusted data only</span>
+                      <span>{queryTrace.coverage}</span>
+                    </div>
+                    {queryTrace.rows.length > 0 && (
+                      <div className="query-result-wrap">
+                        <table className="query-result-table" aria-label={`${queryTrace.template} query results`}>
+                          <thead><tr>{queryTrace.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
+                          <tbody>
+                            {queryTrace.rows.map((row, rowIndex) => (
+                              <tr key={`${queryTrace.template}-${rowIndex}`}>
+                                {queryTrace.columns.map((column) => <td key={column.key}>{formatQueryValue(row[column.key], column)}</td>)}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <details className="sql-trace">
+                      <summary><span>View SQL executed</span><small>{queryTrace.template}</small></summary>
+                      <pre><code>{queryTrace.sql}</code></pre>
+                      <p><code>trusted_sales</code> is an in-memory table containing only the current published rows.</p>
+                    </details>
+                  </div>
+                )}
+                {agentError && <p className="agent-error" role="status">{agentError}</p>}
+              </div>
+            </div>
+
+            <div className="question-box ai-question-box">
+              <input value={question} disabled={agentLoading} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => event.key === "Enter" && answerQuestion()} placeholder="Ask about this dataset…" aria-label="Question for PulseOps AI" autoFocus />
+              <button disabled={agentLoading} onClick={() => answerQuestion()} aria-label="Submit question">{agentLoading ? "Asking…" : "Ask"}</button>
+            </div>
+            <p className="ai-governance-note"><span aria-hidden="true">✓</span> Trusted records only · Read-only tools · Evidence included</p>
+          </section>
+        )}
+
+        <div className="ai-launcher-spectrum">
+          <button ref={aiLauncherRef} className="ai-launcher" type="button" onClick={() => setAgentOpen((current) => !current)} aria-expanded={agentOpen} aria-controls="pulseops-ai-dialog" aria-label={agentOpen ? "Close PulseOps AI" : "Open PulseOps AI"}>
+            <span className="ai-launcher-icon" aria-hidden="true">P</span>
+            <span className="ai-launcher-copy"><strong>Ask Pulse AI</strong><small>{agentOpen ? "Close assistant" : "How can I help?"}</small></span>
+          </button>
+        </div>
+      </div>
     </main>
   );
 }

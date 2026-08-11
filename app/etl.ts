@@ -20,6 +20,11 @@ export type SalesRow = {
   status: string;
 };
 
+export type TrustedSalesRecord = {
+  sourceRow: number;
+  row: SalesRow;
+};
+
 export type RawSalesRecord = {
   sourceRow: number;
   values: Record<RequiredColumn, string>;
@@ -88,6 +93,7 @@ export type RevenueGuardrailResult = {
 
 export type EtlResult = {
   rows: SalesRow[];
+  trustedRecords: TrustedSalesRecord[];
   issues: DataIssue[];
   corrections: DataCorrection[];
   quarantinedRecords: QuarantinedRecord[];
@@ -436,6 +442,7 @@ export function runEtl(
   const revenueGuardrail = revenueGuardrailFor(records, resolvedConfiguration);
   const approvedRevenueOutliers = new Set(resolvedConfiguration.approvedRevenueOutlierRows);
   const rows: SalesRow[] = [];
+  const trustedRecords: TrustedSalesRecord[] = [];
   const issues: DataIssue[] = [];
   const corrections: DataCorrection[] = [];
   const quarantined = new Set<number>();
@@ -547,6 +554,7 @@ export function runEtl(
 
     seenOrderIds.set(transformed.order_id, canonical);
     rows.push(transformed);
+    trustedRecords.push({ sourceRow: row, row: transformed });
     corrections.push(...rowCorrections);
   }
 
@@ -566,6 +574,7 @@ export function runEtl(
 
   return {
     rows,
+    trustedRecords,
     issues,
     corrections,
     quarantinedRecords,

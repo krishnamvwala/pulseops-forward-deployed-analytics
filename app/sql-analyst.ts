@@ -164,6 +164,24 @@ LIMIT ${limit};`;
     };
   }
 
+  if (/\b(remediat\w*|correct\w*|fix\w*|next steps?)\b/.test(normalized)) {
+    const sql = `SELECT COUNT(*) AS trusted_rows
+FROM trusted_sales;`;
+    const results = database.exec<Record<string, QueryValue>[]>(sql);
+    const answer = context.quarantinedCount
+      ? `Start with the ${context.quarantinedCount} quarantined row${context.quarantinedCount === 1 ? "" : "s"}. Export the correction queue, verify each missing or risky value with the source system or record owner, update only confirmed values, upload the correction CSV for preview, and republish only the rows that pass every validation rule. Do not guess ambiguous values.`
+      : `No records are currently quarantined, so no manual remediation is required. Keep the ${rows.length} trusted row${rows.length === 1 ? "" : "s"} published, review any future exceptions with the source system or record owner, and rerun the ETL pipeline before refreshing KPIs.`;
+
+    return {
+      answer,
+      template: "Governed remediation plan",
+      sql,
+      rows: results,
+      columns: [{ key: "trusted_rows", label: "Trusted rows", format: "number" }],
+      coverage: queryCoverage,
+    };
+  }
+
   if (/\b(late|delayed|operations?|focus)\b/.test(normalized)) {
     const sql = `SELECT region,
        COUNT(*) AS late_orders
