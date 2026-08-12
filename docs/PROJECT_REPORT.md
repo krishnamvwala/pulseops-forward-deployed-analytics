@@ -1,5 +1,7 @@
 # PulseOps Project Report
 
+> **Independent portfolio case study:** PulseOps was designed and built by Krishna Mvwala using synthetic data. It is not a project for a current or former employer.
+
 ## Executive Summary
 
 PulseOps is a forward-deployed analytics case study built by Krishna Mvwala. It demonstrates the complete path from customer discovery to a deployed data product: define the business objective, establish a data contract, validate source data, transform trusted records, deliver operational KPIs, and support investigation through a conversational analytical interface.
@@ -41,7 +43,7 @@ Turn daily sales files into trusted decisions before 8:00 AM.
 | Executive reporting | Revenue, margin, on-time rate, and quality KPIs |
 | Performance investigation | Regional ranking and category economics |
 | Guided analysis | SQL-backed analytical copilot with visible query evidence |
-| Confidentiality | Synthetic scenario, session-only processing, no database |
+| Confidentiality | Synthetic scenario; session-only standalone mode; governed local service for the full-stack demonstration |
 
 ## Solution Architecture
 
@@ -86,7 +88,7 @@ flowchart TB
     F --> G
 ```
 
-All data processing occurs in the browser. The demonstration does not send uploaded data to an API or persist it in a database.
+In the public standalone deployment, all data processing occurs in the browser: uploaded data is not sent to an API or persisted in a database. In the configured full-stack demonstration, the dashboard sends the current synthetic pipeline to the separate PulseOps AI Agent. That local FastAPI service persists the imported run in PostgreSQL and can let Microsoft Foundry select from five governed read-only tools. These modes are explicit in the interface, and no Azure or database credential is placed in the browser.
 
 ## ETL Workflow
 
@@ -155,7 +157,7 @@ The current version uses a demonstration score that starts at 100 and applies pe
 
 ## Analyst Copilot Design
 
-The copilot interprets a small set of business intents, selects an approved SQL template, and executes it against the browser's in-memory `trusted_sales` table. The result includes the plain-language answer, a ranked result table, the trusted-row coverage, and an expandable copy of the exact SQL. Supported topics include:
+The public standalone copilot interprets a small set of business intents, selects an approved SQL template, and executes it against the browser's in-memory `trusted_sales` table. The result includes the plain-language answer, a ranked result table, the trusted-row coverage, and an expandable copy of the exact SQL. Supported topics include:
 
 - Revenue by region
 - Margin by category
@@ -163,15 +165,16 @@ The copilot interprets a small set of business intents, selects an approved SQL 
 - Late-order operational focus
 - Overall dataset summary
 
-Limits are parsed as bounded integers from 1–5, and unrecognized user text never enters the SQL statement. The design intentionally does not claim to be a production AI assistant. It is a deterministic proof of concept that demonstrates how a governed natural-language interface can be layered over trusted data. A production version could introduce an LLM only after adding:
+Limits are parsed as bounded integers from 1–5, and unrecognized user text never enters the SQL statement. This credential-free path keeps the public demo available when the agent service is not running.
 
-- Approved model access
-- Row-level permissions
-- Grounded query generation
-- Result citations
-- Prompt and response audit logs
-- Sensitive-data controls
-- Evaluation and hallucination monitoring
+The implemented full-stack path connects the same interface to the separate PulseOps AI Agent. The dashboard imports the active synthetic pipeline with source-row lineage, then sends the question to FastAPI. A deterministic provider supports repeatable Azure-free testing, while the Microsoft Foundry provider authenticates through Microsoft Entra ID and selects only from five typed, read-only tools. PulseOps renders the factual answer from validated tool output and returns provider, tool-call, evidence, conversation, correlation, and audit identifiers.
+
+The agent service is a local-development integration, not a production-authenticated public API. Public deployment still requires:
+
+- Inbound identity validation and user-to-pipeline authorization
+- Rate limits, production secrets, and retention controls
+- Expanded live evaluations and adversarial safety testing
+- Cost, latency, availability, and security monitoring
 
 ## User Experience Decisions
 
@@ -196,9 +199,10 @@ Limits are parsed as bounded integers from 1–5, and unrecognized user text nev
 ## Security and Privacy
 
 - The included dataset is synthetic.
-- Uploaded files are processed in the browser session.
-- The current application does not intentionally persist uploaded records.
-- No LLM or external analytical API receives uploaded data.
+- In public standalone mode, uploaded files are processed only in the browser session and are not intentionally persisted.
+- In configured full-stack mode, the dashboard sends the active synthetic pipeline to the local FastAPI/PostgreSQL agent service for governed investigation.
+- Microsoft Foundry receives only the context needed to select approved tools; credentials remain outside the browser and repository.
+- The local agent API is not publicly exposed because inbound authentication and authorization are not yet implemented.
 - No client or employer names appear in the solution.
 - Production deployments would require formal authentication, authorization, encryption, retention, and audit policies.
 
@@ -292,12 +296,13 @@ Recommended manual acceptance checks:
 - Forecasting
 - KPI alerts and operational workflows
 
-### Phase 4 — Governed AI
+### Phase 4 — Governed AI and production hardening
 
-- Semantic model and query service
-- LLM tool calling against approved metrics
-- Source citations
-- Evaluation suite
+- Implemented: FastAPI agent service and typed tool contracts
+- Implemented: Microsoft Foundry tool selection with Microsoft Entra ID authentication
+- Implemented: Evidence references, audit events, and Azure-free automated tests
+- Remaining: Production inbound authentication and user-to-pipeline authorization
+- Remaining: Expanded live evaluation suite
 - Cost, latency, and safety monitoring
 
 ## Repository and Deployment
@@ -305,7 +310,7 @@ Recommended manual acceptance checks:
 - Live application: [PulseOps](https://pulseops-krishna-mvwala.krishna-mvwala.workers.dev)
 - Application source: React, TypeScript, vinext, and Vite
 - Deployment shape: Cloudflare-compatible output
-- Data storage: Session-only for the current portfolio version
+- Data storage: Session-only in the public standalone deployment; PostgreSQL in the configured local agent demonstration
 - Permitted use: Publicly source-available for non-commercial portfolio and recruitment evaluation under the repository's custom license
 
 ## Author

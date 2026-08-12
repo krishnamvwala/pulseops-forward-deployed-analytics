@@ -200,6 +200,7 @@ export default function Home() {
   const batchFileRef = useRef<HTMLInputElement>(null);
   const remediationEditorRef = useRef<HTMLFormElement>(null);
   const aiLauncherRef = useRef<HTMLButtonElement>(null);
+  const agentRequestGenerationRef = useRef(0);
 
   const issues = etlResult?.issues ?? [];
   const corrections = etlResult?.corrections ?? [];
@@ -266,12 +267,16 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => {
+  function resetAgentSession() {
+    agentRequestGenerationRef.current += 1;
     setAgentPipelineId(null);
     setAgentConversationId(null);
     setAgentToolUses([]);
     setAgentEvidence([]);
-  }, [etlResult, rawRecords, sourceName]);
+    setQueryTrace(null);
+    setAgentLoading(false);
+    setAgentError("");
+  }
 
   useEffect(() => {
     if (!agentOpen) return;
@@ -395,6 +400,7 @@ export default function Home() {
     setRawRecords(batchPreview.records);
     setRows(batchPreview.result.rows);
     setEtlResult(batchPreview.result);
+    resetAgentSession();
     setPipelineStatus("complete");
     setLastRun(`Batch republished • ${publishedAt}`);
     setAnswer(
@@ -434,6 +440,7 @@ export default function Home() {
       setRows([]);
       setEtlResult(null);
       setSourceName(file.name);
+      resetAgentSession();
       setRawRowCount(extracted.rowCount);
       setUploadError("");
       setPipelineStatus("ready");
@@ -470,6 +477,7 @@ export default function Home() {
 
   function runPipeline() {
     if (!rawRecords.length || pipelineStatus === "running") return;
+    resetAgentSession();
     setPipelineStatus("running");
     setLastRun("Validating and transforming rows…");
     window.setTimeout(() => {
@@ -546,6 +554,7 @@ export default function Home() {
     setRawRecords(correction.records);
     setRows(correction.result.rows);
     setEtlResult(correction.result);
+    resetAgentSession();
     setPipelineStatus("complete");
     setLastRun(`Republished after manual review • ${publishedAt}`);
     setAnswer(
@@ -608,6 +617,7 @@ export default function Home() {
       const trustedChange = nextResult.rows.length - etlResult.rows.length;
       setRows(nextResult.rows);
       setEtlResult(nextResult);
+      resetAgentSession();
       setLastRun(`Revenue contract revalidated • ${changedAt}`);
       setAnswer(
         `The revenue guardrail was updated and all ${rawRowCount} source rows were revalidated. The trusted dataset changed by ${trustedChange > 0 ? "+" : ""}${trustedChange} row${Math.abs(trustedChange) === 1 ? "" : "s"}; KPIs and SQL answers now use the new published result.`,
@@ -666,6 +676,7 @@ export default function Home() {
     setEtlConfiguration(nextConfiguration);
     setRows(nextResult.rows);
     setEtlResult(nextResult);
+    resetAgentSession();
     setPipelineStatus("complete");
     setLastRun(`Revenue exception reviewed • ${approvedAt}`);
     setAnswer(
@@ -711,6 +722,7 @@ export default function Home() {
   async function answerQuestion(value = question) {
     const submittedQuestion = value.trim();
     if (!submittedQuestion || agentLoading) return;
+    const requestGeneration = agentRequestGenerationRef.current;
     if (pipelineStatus !== "complete" || !etlResult) {
       setAnswer("Run the ETL pipeline first so I answer from the cleaned, published dataset—not the raw upload.");
       setQueryTrace(null);
@@ -726,6 +738,7 @@ export default function Home() {
           const importedPipeline = await importAgentPipeline(
             buildAgentPipelineImport(sourceName, rawRecords, etlResult),
           );
+          if (requestGeneration !== agentRequestGenerationRef.current) return;
           pipelineRunId = importedPipeline.id;
           conversationId = null;
           setAgentPipelineId(pipelineRunId);
@@ -736,6 +749,7 @@ export default function Home() {
           submittedQuestion,
           conversationId,
         );
+        if (requestGeneration !== agentRequestGenerationRef.current) return;
         setAnswer(response.answer);
         setQueryTrace(null);
         setAgentProvider(response.provider);
@@ -744,8 +758,10 @@ export default function Home() {
         setAgentEvidence(response.evidence);
         setAgentConnection("connected");
       } catch (error: unknown) {
+        if (requestGeneration !== agentRequestGenerationRef.current) return;
         const message = error instanceof Error ? error.message : "The live agent is unavailable.";
         const { runAnalystQuery } = await import("./sql-analyst");
+        if (requestGeneration !== agentRequestGenerationRef.current) return;
         const response = runAnalystQuery(submittedQuestion, rows, {
           sourceRowCount: rawRowCount,
           quarantinedCount,
@@ -761,10 +777,13 @@ export default function Home() {
         setAgentToolUses([]);
         setAgentEvidence([]);
       } finally {
-        setAgentLoading(false);
+        if (requestGeneration === agentRequestGenerationRef.current) {
+          setAgentLoading(false);
+        }
       }
     } else {
       const { runAnalystQuery } = await import("./sql-analyst");
+      if (requestGeneration !== agentRequestGenerationRef.current) return;
       const response = runAnalystQuery(submittedQuestion, rows, {
         sourceRowCount: rawRowCount,
         quarantinedCount,
